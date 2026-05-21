@@ -1,8 +1,8 @@
 """Self-improving knowledge store.
 
-Compact, file-system backed implementation of the learning layer. Aligned with
-the architectural principle articulated by Satoshi Nakajima (2026-04-07):
-"Use the local filesystem as the database; let an AI agent navigate it."
+Compact, file-system backed implementation of the learning layer. The local
+filesystem is the database; any human or any other agent can read and edit
+the JSONL files directly.
 
 Three things accumulate over time:
 

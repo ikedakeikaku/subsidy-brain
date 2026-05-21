@@ -103,7 +103,7 @@ class DataSourceMetadata(BaseModel):
 @runtime_checkable
 class DataConnector(Protocol):
     """A connector that exposes one external data source as a local namespace
-    under the filesystem-as-DB pattern (Nakajima 2026-04-07).
+    under the filesystem-as-DB pattern.
 
     The contract is intentionally narrow: pull the source down to local files
     in a deterministic layout, return what changed.

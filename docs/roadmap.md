@@ -35,7 +35,7 @@
 - freee MCP連携 → ローカルJSON化
 - Google Drive / Gmail / LINE MCP連携
 - 紙書類のOCR + 構造化（既存 ocr_tools の拡張）
-- ベクトルストアなし、ファイルシステムをDBとして扱う（中島氏 2026-04-07号方式）
+- ベクトルストアは使わず、ローカルファイルシステムを DB として扱う
 
 ## Phase 4 — Company Brain（長期）
 

@@ -1,8 +1,10 @@
 # Architecture
 
-## AI-Nativeなビジネスロジック中心設計
+## 設計原則
 
-中島聡氏が2026-05-19号で書いた構造をベースにしています。
+ビジネスロジックを API として実装し、LLM と UI をどちらもその API を呼ぶ
+対等な一級クライアントとして扱う。これにより、LLM が生成した申請書と UI
+が編集した申請書の間に構造的なズレが生まれない。
 
 ```
             ┌─────────────────────────────┐
@@ -19,44 +21,51 @@
        │  (Claude)    │          │  (CLI/Web)  │
        └─────────────┘           └────────────┘
        一級クライアント            一級クライアント
-       同じビジネスロジックを通る
 ```
 
-**UIではなくAPI（=ビジネスロジック）が主役**。LLMもUIも、API経由で同じビジネスロジックを呼ぶ対等なクライアント。これによりLLMで生成した申請書とUIで編集した申請書のあいだに、構造的なズレが発生しません。
+UI ではなく API（ビジネスロジック）が主役。LLM も UI も、API 経由で同じ
+ビジネスロジックを呼ぶ。
 
 ## エージェント連携
 
 ```
-Step 0 (並列実行)
-├─ #a05 GuidelineParser   公募要領PDF → 不変条件JSON
-├─ #a06 FinancialReader   決算書 → PLSummary / BSSummary
-└─ #a07 ExpenseCalc       見積書 → 経費明細
+Phase 0 (準備・並列実行)
+├─ GuidelineFetcher       補助金名 → 公募要領PDF・様式docxを自動取得（任意）
+└─ AdoptionResearcher     採択事例をWeb調査し skill_store に蓄積（任意）
+
+       ↓
+
+Phase 1 (並列実行)
+├─ #5 GuidelineParser     公募要領PDF → 不変条件JSON
+├─ #6 FinancialReader     決算書 → PLSummary / BSSummary
+└─ #7 ExpenseCalc         見積書 → 経費明細
 
        ↓ (全部完了で起動)
 
-Step 1
-└─ #a08 StoryBuilder      上記3つを統合 → ApplicationStory（4-2やKPI含む論理構造）
+Phase 2
+└─ #8 StoryBuilder        上記を統合 → ApplicationStory
 
        ↓
 
-Step 2 (並列実行)
-├─ #a12 FactChecker       統計データの裏付け検証（Perplexity）
-└─ #a14 QualityChecker    採択パターン照合・自己採点
+Phase 3 (並列実行)
+├─ #12 FactChecker        統計データの裏付け検証（Perplexity）
+└─ #14 QualityChecker     採択パターン照合・自己採点
 
        ↓
 
-Step 3
-└─ #a13 DocumentBuilder   全部を統合 → Word出力
+Phase 4
+└─ #13 DocumentBuilder    全部を統合 → 公式テンプレートに流し込み → .docx 出力
 ```
 
-オーケストレーター（`agents/orchestrator.py`）が Step依存関係を管理し、リトライ・エラーハンドリングを担当します。これが中島氏のいう「AIスーパー番頭」（2024-12-24号）に相当します。
+オーケストレーター（`agents/orchestrator.py`）が依存関係を管理し、リトライ
+とエラーハンドリングを担当する。
 
-## Pydantic駆動の構造化出力
+## Pydantic 駆動の構造化出力
 
-LLM呼び出しはすべて `tools.claude_client.call_claude_json` 経由で、Claude の tool_use 機能を使って**必ずスキーマ準拠のJSON**を返します。
+LLM 呼び出しは `tools.claude_client.call_claude_json` 経由で、Claude の
+tool_use 機能により**必ずスキーマ準拠の JSON が返る**。
 
 ```python
-# tools/claude_client.py のパターン
 result = await call_claude_json(
     system_prompt=...,
     user_message=...,
@@ -65,21 +74,40 @@ result = await call_claude_json(
 output = GuidelineParseOutput.model_validate(result)
 ```
 
-これにより：
-
-- LLM出力が「自然言語の段落」ではなく**型付きデータ**になる
-- ビジネスロジック側で不変条件をチェックできる
-- UIとLLMが同じ型を共有できる（クライアント対等の核心）
-
-中島氏が2026-05-19号で「型付きのスキーマを読んで確実にAPIを呼び出せるLLMが普通に手に入るようになった」と書いた条件の上に成り立っています。
+- LLM 出力は自然言語の段落ではなく型付きデータ
+- ビジネスロジック側で不変条件を機械的にチェック可能
+- UI と LLM が同じ型を共有
 
 ## 不変条件をどう守るか
 
-申請書の質を担保しているのは、各エージェントの賢さよりも**ビジネスロジック側の不変条件**です。
+申請書の質を担保するのは、各エージェントの賢さよりも**ビジネスロジック側
+の不変条件**である。
 
 - 公募要領の経費区分 → 経費明細は必ずいずれかに分類されている
 - 文字数上限 → セクションごとに `schemas/section_limits.py` で型化
 - 加点要件 → `tools/bonus_points.py` で機械判定（赤字／黒字／賃上げ／環境変化）
 - 採択パターン → `agents/quality_check.py` の業界別キーワードと自己採点ルーブリック
 
-LLMがどんな出力をしても、これらの不変条件を破った時点でビジネスロジック層が拒絶する設計です。
+LLM がどんな出力をしても、これらの不変条件を破った時点でビジネスロジック層
+が拒絶する。
+
+## テンプレート保持
+
+公式の Word 様式（罫線・スタイル・余白）を壊さないために、Document Builder
+は**スクラッチビルドではなくテンプレート流し込み式**を採る。
+
+- `templates/<subsidy>/様式X.docx` を読み込み
+- `{{section_1_1}}` のような placeholder を内容に置換
+- 表の罫線・Heading の連番・既定フォントはテンプレ側が保持
+
+## 自己改善層
+
+`tools/skill_store.py` がローカルファイルシステムに JSONL で蓄積：
+
+- `ExecutionLog` — 全エージェント実行ログ
+- `SkillEntry` — 抽出された know-how、スコア付き
+- `FeedbackInput` — 採択／不採択結果
+- `knowledge/*.json` — 業種別・補助金別の自由形式ナレッジ
+
+採択フィードバックが入るたび、該当 skill のスコアが ±0.10 で更新され、版
+管理される。次回の検索でスコアが高い skill が優先的に注入される。
