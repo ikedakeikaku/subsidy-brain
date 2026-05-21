@@ -12,20 +12,22 @@
 
 補助金IDを1つ渡すと、以下が**全自動**で走ります：
 
-1. 補助金マスタを引いて公募要領 PDF と公式 Word 様式を**自動ダウンロード＋キャッシュ**
+1. 補助金マスタを引いて公募要領 PDF と公式 Word/Excel 様式を**自動ダウンロード＋キャッシュ**
 2. Web で**採択事例を自動調査**し、業種別ナレッジとしてスキルストアに蓄積
 3. 公募要領の不変条件（経費区分・審査基準・文字数上限）を構造化
 4. 事業者ヒアリング・決算データと統合して**ストーリーを Claude で構築**
-5. 補助金ごとの **SubsidyProfile**（セクション構造・目標文字数・必須グラフ・必須テーブル）に従って組み立て
+5. 補助金ごとの **SubsidyProfile** に従って組み立て（セクション構造・目標文字数・必須グラフ・必須テーブル）
 6. 月次売上推移グラフ・効果のbefore/afterグラフを**自動生成して埋め込み**
 7. スケジュール表・経費明細表を**自動生成して挿入**
-8. **長さバリデーション**＋**4軸自己採点**（0-100点）を実施し、結果を申請書末尾に表示
-9. すべての実行を学習層に記録し、**次の案件で活用**
+8. **6軸の採択確率推定**を実施（自社固有データ・課題→施策対応・加点項目活用・具体数値密度・文字数達成・図表配置）
+9. **目標未達なら自動で改善ループ**を回し、弱いセクションを Claude で書き直し
+10. **Excel 様式（経費明細書 等）はフォーマット保持で充填**（drawings/罫線/conditional formatting を壊さない）
+11. すべての実行を学習層に記録し、**次の案件で活用**
 
 ```bash
 git clone https://github.com/ikedakeikaku/subsidy-brain && cd subsidy-brain
 uv sync --extra dev
-uv run pytest -ra                              # 16 tests
+uv run pytest -ra                              # 21 tests
 uv run python demo/run_full_demo.py            # 一気通貫デモ（offline mock）
 ANTHROPIC_API_KEY=sk-ant-... \
   uv run python demo/run_full_demo.py --live   # 実 Claude 呼び出し
@@ -38,12 +40,15 @@ ANTHROPIC_API_KEY=sk-ant-... \
  ✓ Full pipeline complete
    subsidy            : 販路開拓支援補助金（架空・デモ用）
    docx               : demo/output/full_pipeline_application.docx
-   docx size          : 87,297 bytes
+   docx size          : 87,415 bytes
    sections           : 8
    chars              : 4,595 / 5,700 (100% compliance)
    charts inserted    : chart_revenue_trend, chart_effect_before_after
    tables inserted    : table_schedule, table_expense
-   quality score      : 91/100 (達成)
+   adoption probability: 90/100 (達成)
+   refinement         : 90→90 over 1 iter(s)
+   xlsx (経費明細)    : demo/output/経費明細書.xlsx (25 cells replaced, format preserved)
+   manifest           : demo/output/full_pipeline_application.manifest.json
 ============================================================
 ```
 
@@ -132,15 +137,60 @@ tables:
 
 新しい補助金を追加するときは、Python コードを1行も書かず、`profile.yaml` を1つ追加するだけ。
 
-### フォーマット保持
+### フォーマット保持（Word／Excel）
 
-申請書を**スクラッチでビルドしない**：
+申請書を**スクラッチでビルドしない**。テンプレートを開いて placeholder を
+置換するだけ、という設計で罫線・罫線・スタイル・名前付き範囲を死守します。
 
-- 公式 Word 様式を `templates/<program_id>/` に置くと `tools/template_filler.py` で
-  `{{placeholder}}` 置換式に切り替わり、罫線・Heading連番・余白・既定フォントは
-  すべて公式が保持
-- 公式 docx を持たない補助金は `document_assembler` が profile に従って
-  ゼロから組むが、その場合もセクション順・章立ては profile が保証
+**Word（.docx）：** `tools/template_filler.py`
+- `{{placeholder}}` 置換式
+- 罫線・Heading 連番・余白・既定フォントはテンプレ側が保持
+- python-docx で再構築されるのは置換後の本文だけ
+
+**Excel（.xlsx）：** `tools/xlsx_filler.py`
+- **openpyxl を round-trip に使わない**（drawings・斜線・conditional formatting を壊す）
+- `zipfile` で .xlsx を ZIP として開き、`xl/sharedStrings.xml` と
+  `xl/worksheets/sheet*.xml` のテキスト部分**だけ**を置換
+- それ以外（`xl/styles.xml`・`xl/drawings/`・`xl/theme/`・`xl/_rels/`等）は**バイト同一**でコピー
+- 結果として drawings／conditional formatting／data validation／defined names が全て生き残る
+- テスト `test_xlsx_filler_does_not_touch_non_text_parts` で byte-identical を検証
+
+### 自己改善ループ（目標スコア到達まで自動で書き直し）
+
+初回ドラフトが採択確率の目標を下回った場合、`tools/refinement_loop.py` が
+自動で次を繰り返します：
+
+1. 6軸の `adoption_estimator` で採点
+2. もっとも回復幅が大きい弱点セクションを特定
+3. そのセクションを Claude で書き直し（live モード）またはルール駆動でパッチ（mock モード）
+4. 再採点 → 目標達成まで（最大 N 回、既改善セクションはスキップ）
+
+```text
+BEFORE: 29/100  (weak: section_1_1, section_4_2, section_1_2, ...)
+  iter 0: 29 → 52   refined: section_1_1   reason: 自社固有データ; 課題→施策対応
+  iter 1: 52 → 56   refined: section_4_2   reason: 課題→施策対応
+  iter 2: 56 → 58   refined: section_3     reason: 自社固有データ
+  ...
+AFTER:  66/100  (passed=True)
+```
+
+リファインメント履歴は `manifest.json` に保存され、スキルストアに学習対象として記録されます。
+
+### 実補助金プリセット（`presets/`）
+
+実運用向けの registry/profile スターターを `presets/` に同梱：
+
+| ファイル | 補助金 |
+|---|---|
+| `presets/jizoku_19.yaml` | 小規模事業者持続化補助金 第19回（4様式：docx×3 + xlsx×1） |
+| `presets/jizoku_19_profile.yaml` | 11セクション・目標8,300字構成、加点項目本文を含む profile |
+| （拡張予定）`monozukuri_v18.yaml` | ものづくり補助金 第18次 |
+| （拡張予定）`it_donyu_2026.yaml` | IT導入補助金 2026年枠 |
+| （拡張予定）`jigyou_saikouchiku_v12.yaml` | 事業再構築補助金 第12回 |
+
+公開リポは構造とコードのみを同梱し、実 URL の埋め込みはユーザー自身が
+行うか、`agents/subsidy_discoverer.py`（Perplexity 駆動）で自動発見します。
+詳細は [`presets/README.md`](presets/README.md)。
 
 ### グラフ・表の自動生成
 

@@ -42,10 +42,12 @@ from demo.run_demo import build_story_live  # noqa: E402
 from schemas.skill import ExecutionLog  # noqa: E402
 from schemas.subsidy_profile import load_profile  # noqa: E402
 from schemas.subsidy_registry import YamlSubsidyRegistry  # noqa: E402
+from tools.adoption_estimator import estimate_adoption_probability, format_estimate_block  # noqa: E402
 from tools.document_assembler import assemble_document  # noqa: E402
 from tools.length_validator import validate_lengths  # noqa: E402
-from tools.quality_scoring import format_quality_block, score_application  # noqa: E402
+from tools.refinement_loop import refine_until_threshold  # noqa: E402
 from tools.skill_store import skill_store  # noqa: E402
+from tools.xlsx_filler import fill_xlsx_template, write_sample_xlsx_template  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("demo")
@@ -115,16 +117,65 @@ async def run(live: bool) -> None:
         length_report["total_target_chars"],
     )
 
-    # 6. Quality score
-    quality_report = score_application(profile, company, story)
+    # 6. Adoption-probability estimate (initial)
+    initial_estimate = estimate_adoption_probability(profile, company, story)
     logger.info(
-        "quality score: %d/%d %s",
-        quality_report["total"],
-        quality_report["target"],
-        "✓ 達成" if quality_report["passed"] else "✗ 未達",
+        "initial adoption probability: %d/%d %s",
+        initial_estimate["total"],
+        initial_estimate["target"],
+        "✓" if initial_estimate["passed"] else "(refinement needed)",
     )
 
-    # 7. Assemble the final docx
+    # 6b. Self-improvement loop (runs only if below threshold)
+    refinement = await refine_until_threshold(
+        profile,
+        company,
+        story,
+        max_iterations=4,
+        mode="live" if live else "mock",
+    )
+    if not initial_estimate["passed"]:
+        logger.info(
+            "refinement: %d → %d over %d iter(s), passed=%s",
+            initial_estimate["total"],
+            refinement["final_score"],
+            len(refinement["iterations"]),
+            refinement["passed"],
+        )
+    story = refinement["final_story"]
+    quality_report = estimate_adoption_probability(profile, company, story)
+
+    # 7. Fill the Excel expense-detail template (format-preserving)
+    expense_template = ROOT / "templates" / "sample_hanro_kaitaku_v1" / "経費明細書.xlsx"
+    if not expense_template.exists():
+        write_sample_xlsx_template(expense_template)
+    breakdown = (company.get("expenses") or {}).get("breakdown") or []
+    expense_subs: dict[str, str] = {
+        "applicant_name": company["company"]["name"],
+        "representative": company["company"]["representative"],
+        "expense_total": f"{company['expenses'].get('total', 0):,}",
+        "subsidy_amount": f"{company['expenses'].get('subsidy_amount', 0):,}",
+        "self_funding": f"{company['expenses'].get('self_funding', 0):,}",
+    }
+    for i, item in enumerate(breakdown[:5], start=1):
+        expense_subs[f"expense_{i}_category"] = item.get("category", "")
+        expense_subs[f"expense_{i}_item"] = item.get("item", "")
+        expense_subs[f"expense_{i}_amount"] = f"{item.get('amount', 0):,}"
+        expense_subs[f"expense_{i}_note"] = item.get("note", "")
+    # Pad empty rows with blanks so no {{placeholder}} survives in the output
+    for i in range(len(breakdown[:5]) + 1, 6):
+        for field in ("category", "item", "amount", "note"):
+            expense_subs[f"expense_{i}_{field}"] = ""
+    expense_xlsx = ROOT / "demo" / "output" / "経費明細書.xlsx"
+    xlsx_report = fill_xlsx_template(expense_template, expense_xlsx, expense_subs)
+    logger.info(
+        "xlsx fill: replaced=%d, files_touched=%s, missing=%s",
+        xlsx_report["replaced"],
+        xlsx_report["files_touched"],
+        xlsx_report["missing_keys"],
+    )
+
+    # 8. Assemble the final docx
     out_path = ROOT / "demo" / "output" / "full_pipeline_application.docx"
     assemble_result = assemble_document(
         profile=profile,
@@ -137,7 +188,7 @@ async def run(live: bool) -> None:
             "生成日時": datetime.now().isoformat(timespec="seconds"),
             "live_llm": "yes" if live else "no",
         },
-        quality_block=format_quality_block(quality_report),
+        quality_block=format_estimate_block(quality_report),
     )
     logger.info(
         "assembled: charts=%s, tables=%s, size=%dB",
@@ -184,7 +235,14 @@ async def run(live: bool) -> None:
         },
         "story_sections": list(story.keys()),
         "length_validation": length_report,
+        "initial_adoption_probability": initial_estimate,
+        "refinement": {
+            "passed": refinement["passed"],
+            "final_score": refinement["final_score"],
+            "iterations": refinement["iterations"],
+        },
         "quality_score": quality_report,
+        "xlsx_expense_fill": xlsx_report,
         "assembly": assemble_result,
         "output_docx": str(out_path.relative_to(ROOT)),
         "execution_log_id": log_id,
@@ -207,8 +265,15 @@ async def run(live: bool) -> None:
           f"({length_report['compliance_pct']:.0f}% compliance)")
     print(f"   charts inserted    : {', '.join(assemble_result['charts_inserted']) or '—'}")
     print(f"   tables inserted    : {', '.join(assemble_result['tables_inserted']) or '—'}")
-    print(f"   quality score      : {quality_report['total']}/100 "
+    print(f"   adoption probability: {quality_report['total']}/100 "
           f"({'達成' if quality_report['passed'] else '未達'})")
+    if refinement["iterations"]:
+        print(f"   refinement         : "
+              f"{initial_estimate['total']}→{refinement['final_score']} "
+              f"over {len(refinement['iterations'])} iter(s)")
+    print(f"   xlsx (経費明細)    : {expense_xlsx.relative_to(ROOT)} "
+          f"({xlsx_report['replaced']} cells replaced, "
+          f"format preserved)")
     print(f"   manifest           : {manifest_path.relative_to(ROOT)}")
     print("============================================================")
 
