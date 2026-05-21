@@ -1,33 +1,23 @@
-"""End-to-end demo: subsidy id → fetched guideline → adoption research →
-Claude-built story → official template filled → .docx.
+"""End-to-end demo: subsidy id → fetch → research → story → assemble docx.
 
-Stages
-------
+This is the canonical public-facing demo. Stages:
 
-1. Resolve a subsidy program from the registry.
-2. GuidelineFetcher pulls the guideline PDF and form .docx files into a
-   local cache. In the public demo these URLs are example.invalid so the
-   cache placeholders are empty — the rest of the pipeline still runs.
-3. AdoptionResearcher queries Perplexity for adoption examples and persists
-   the findings to the skill store. Without an API key this is a no-op.
-4. The story builder runs (offline mock or live Claude) and produces the
-   six section bodies plus the bonus-point block.
-5. The official sample template is generated from
-   ``templates/build_sample_template.py`` so the demo has a real .docx with
-   placeholders. The template filler substitutes the LLM output without
-   reconstructing tables, fonts, or page settings — fidelity is preserved.
-6. The skill store records the run and the demo prints a summary.
+1. Resolve subsidy program via SubsidyRegistry.
+2. Auto-fetch guideline PDF and form .docx files via GuidelineFetcher.
+3. Research adoption examples via AdoptionResearcher.
+4. Build the application story (offline mock or live Claude).
+5. Validate section lengths against the SubsidyProfile.
+6. Score the draft (0–100, four axes).
+7. Assemble the final .docx with charts + tables placed where the profile
+   declares (revenue trend after 1-2, schedule after 4-2, etc.).
+8. Persist an ExecutionLog so the run feeds back into the skill store.
+
+Output: ``demo/output/full_pipeline_application.docx`` + manifest JSON.
 
 Run modes
 ---------
-
 * ``python demo/run_full_demo.py``           offline mock LLM, no fetch / research
 * ``python demo/run_full_demo.py --live``    real Claude call (needs ANTHROPIC_API_KEY)
-
-Output
-------
-
-``demo/output/full_pipeline_application.docx`` plus a manifest JSON.
 """
 from __future__ import annotations
 
@@ -36,7 +26,6 @@ import asyncio
 import json
 import logging
 import os
-import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -48,68 +37,18 @@ sys.path.insert(0, str(ROOT))
 
 from agents.adoption_researcher import AdoptionResearcher  # noqa: E402
 from agents.guideline_fetcher import GuidelineFetcher  # noqa: E402
-from demo.run_demo import MOCK_STORY, build_story_live  # noqa: E402
+from demo.mock_story import MOCK_STORY  # noqa: E402
+from demo.run_demo import build_story_live  # noqa: E402
 from schemas.skill import ExecutionLog  # noqa: E402
+from schemas.subsidy_profile import load_profile  # noqa: E402
 from schemas.subsidy_registry import YamlSubsidyRegistry  # noqa: E402
+from tools.document_assembler import assemble_document  # noqa: E402
+from tools.length_validator import validate_lengths  # noqa: E402
+from tools.quality_scoring import format_quality_block, score_application  # noqa: E402
 from tools.skill_store import skill_store  # noqa: E402
-from tools.template_filler import fill_template  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("demo")
-
-
-def _ensure_template_built() -> Path:
-    """Generate the sample template on first run."""
-    target = ROOT / "templates" / "sample_hanro_kaitaku_v1" / "様式2.docx"
-    if not target.exists():
-        subprocess.run(
-            [sys.executable, str(ROOT / "templates" / "build_sample_template.py")],
-            check=True,
-        )
-    return target
-
-
-def _expense_table_csv(company: dict) -> str:
-    """Flatten the expense breakdown to one line, since the sample template
-    uses a 2-row table (header + body). A production template would have one
-    row per item; the public demo keeps the structure minimal."""
-    items = (company.get("expenses") or {}).get("breakdown", [])
-    return " / ".join(
-        f"{i['category']}: {i['item']} ({i['amount']:,}円)" for i in items
-    )
-
-
-def _substitutions(company: dict, story: dict) -> dict[str, str]:
-    pl = company.get("financial", {}).get("past_3y_pl", []) or [{}, {}, {}]
-    pl = (pl + [{}, {}, {}])[:3]  # pad to 3 rows
-    exp = company.get("expenses") or {}
-    company_block = company.get("company") or {}
-    return {
-        "company_name": company_block.get("name", ""),
-        "representative": company_block.get("representative", ""),
-        "business_address": (
-            f"{company_block.get('prefecture','')}{company_block.get('city','')}"
-        ),
-        "employee_count": f"{company_block.get('employees', '')}名",
-        "bonus_env_change": story.get("bonus_env_change", ""),
-        "section_1_1": story.get("company_overview", ""),
-        "section_1_2": story.get("sales_situation", ""),
-        "section_1_3": story.get("challenges", ""),
-        "section_4_2": story.get("strategy", ""),
-        "section_effect": story.get("expected_outcome", ""),
-        "pl_y1_year": str(pl[0].get("year", "")),
-        "pl_y1_revenue": f"{pl[0].get('revenue', 0):,}",
-        "pl_y1_profit": f"{pl[0].get('operating_profit', 0):,}",
-        "pl_y2_year": str(pl[1].get("year", "")),
-        "pl_y2_revenue": f"{pl[1].get('revenue', 0):,}",
-        "pl_y2_profit": f"{pl[1].get('operating_profit', 0):,}",
-        "pl_y3_year": str(pl[2].get("year", "")),
-        "pl_y3_revenue": f"{pl[2].get('revenue', 0):,}",
-        "pl_y3_profit": f"{pl[2].get('operating_profit', 0):,}",
-        "expense_table_csv": _expense_table_csv(company),
-        "subsidy_amount": f"{exp.get('subsidy_amount', 0):,}",
-        "self_funding": f"{exp.get('self_funding', 0):,}",
-    }
 
 
 async def run(live: bool) -> None:
@@ -124,7 +63,7 @@ async def run(live: bool) -> None:
         raise SystemExit("Sample program not found in registry")
     logger.info("program: %s", program.canonical_name)
 
-    # 2. Auto-fetch guideline + forms (will fail silently on example.invalid)
+    # 2. Auto-fetch guideline + forms
     fetcher = GuidelineFetcher(registry=registry)
     fetch_manifest = await fetcher.fetch(program.program_id)
     logger.info(
@@ -139,11 +78,6 @@ async def run(live: bool) -> None:
     research_manifest = await researcher.research(
         program, industry=company["company"]["industry"]
     )
-    logger.info(
-        "adoption research: available=%s, knowledge_key=%s",
-        research_manifest.get("available"),
-        research_manifest.get("knowledge_key") or "—",
-    )
 
     # 4. Story building
     if live:
@@ -153,38 +87,81 @@ async def run(live: bool) -> None:
             ROOT / "demo" / "sample_guideline.md"
         ).read_text(encoding="utf-8")
         logger.info("calling Claude (live mode)...")
-        story = await build_story_live(company, guideline_text)
+        live_story = await build_story_live(company, guideline_text)
+        # Live story uses different section IDs; remap to profile IDs.
+        story = {
+            "section_1_1": live_story.get("company_overview", ""),
+            "section_1_2": live_story.get("sales_situation", ""),
+            "section_1_3": live_story.get("challenges", ""),
+            "section_4_2": live_story.get("strategy", ""),
+            "section_effect": live_story.get("expected_outcome", ""),
+            "bonus_env_change": live_story.get("bonus_env_change", ""),
+        }
+        # Fill the remaining profile sections from the mock so the doc is
+        # complete even if the live response is narrower.
+        for sec_id, mock_text in MOCK_STORY.items():
+            story.setdefault(sec_id, mock_text)
     else:
         logger.info("offline mock LLM (pass --live for real Claude call)")
-        story = MOCK_STORY
+        story = dict(MOCK_STORY)
 
-    # 5. Fill the official-style template
-    template_path = _ensure_template_built()
+    # 5. Load profile and validate
+    profile = load_profile(ROOT / "demo" / "sample_profile.yaml")
+    length_report = validate_lengths(profile, story)
+    logger.info(
+        "length compliance: %.1f%% (%d/%d chars)",
+        length_report["compliance_pct"],
+        length_report["total_actual_chars"],
+        length_report["total_target_chars"],
+    )
+
+    # 6. Quality score
+    quality_report = score_application(profile, company, story)
+    logger.info(
+        "quality score: %d/%d %s",
+        quality_report["total"],
+        quality_report["target"],
+        "✓ 達成" if quality_report["passed"] else "✗ 未達",
+    )
+
+    # 7. Assemble the final docx
     out_path = ROOT / "demo" / "output" / "full_pipeline_application.docx"
-    fill_report = fill_template(
-        template_path=template_path,
+    assemble_result = assemble_document(
+        profile=profile,
+        company=company,
+        story=story,
         out_path=out_path,
-        substitutions=_substitutions(company, story),
+        extra_metadata={
+            "補助金": program.canonical_name,
+            "申請者": company["company"]["name"],
+            "生成日時": datetime.now().isoformat(timespec="seconds"),
+            "live_llm": "yes" if live else "no",
+        },
+        quality_block=format_quality_block(quality_report),
     )
     logger.info(
-        "template fill: replaced=%s, unique=%s, missing=%s",
-        fill_report["replaced"],
-        fill_report["unique_keys_used"],
-        fill_report["missing_keys"],
+        "assembled: charts=%s, tables=%s, size=%dB",
+        assemble_result["charts_inserted"],
+        assemble_result["tables_inserted"],
+        out_path.stat().st_size,
     )
 
-    # 6. Record into the skill store so we can demonstrate "gets smarter"
+    # 8. Record into the skill store
     log_id = skill_store.save_execution_log(
         ExecutionLog(
             applicant_id=company.get("applicant_id", "DEMO"),
             agent_id="#13",
             input_summary=program.canonical_name,
-            output_summary=f"docx={out_path.name}, sections={len(story)}",
-            quality_score=None,
+            output_summary=(
+                f"docx={out_path.name}, "
+                f"length_compliance={length_report['compliance_pct']}%, "
+                f"quality={quality_report['total']}"
+            ),
+            quality_score=quality_report["total"] / 100,
         )
     )
 
-    # 7. Write a manifest for the user (and for the CI artifact)
+    # 9. Write the manifest for CI / users
     manifest = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "subsidy": {
@@ -204,10 +181,11 @@ async def run(live: bool) -> None:
         "research": {
             "available": research_manifest.get("available"),
             "knowledge_key": research_manifest.get("knowledge_key"),
-            "citations": research_manifest.get("citations", []),
         },
         "story_sections": list(story.keys()),
-        "template_fill": fill_report,
+        "length_validation": length_report,
+        "quality_score": quality_report,
+        "assembly": assemble_result,
         "output_docx": str(out_path.relative_to(ROOT)),
         "execution_log_id": log_id,
         "live_llm": live,
@@ -220,11 +198,18 @@ async def run(live: bool) -> None:
     print()
     print("============================================================")
     print(" ✓ Full pipeline complete")
-    print(f"   subsidy   : {program.canonical_name}")
-    print(f"   docx      : {out_path.relative_to(ROOT)}")
-    print(f"   manifest  : {manifest_path.relative_to(ROOT)}")
-    print(f"   live_llm  : {live}")
-    print(f"   sections  : {', '.join(story.keys())}")
+    print(f"   subsidy            : {program.canonical_name}")
+    print(f"   docx               : {out_path.relative_to(ROOT)}")
+    print(f"   docx size          : {out_path.stat().st_size:,} bytes")
+    print(f"   sections           : {len(story)}")
+    print(f"   chars              : {length_report['total_actual_chars']:,} / "
+          f"{length_report['total_target_chars']:,} "
+          f"({length_report['compliance_pct']:.0f}% compliance)")
+    print(f"   charts inserted    : {', '.join(assemble_result['charts_inserted']) or '—'}")
+    print(f"   tables inserted    : {', '.join(assemble_result['tables_inserted']) or '—'}")
+    print(f"   quality score      : {quality_report['total']}/100 "
+          f"({'達成' if quality_report['passed'] else '未達'})")
+    print(f"   manifest           : {manifest_path.relative_to(ROOT)}")
     print("============================================================")
 
 

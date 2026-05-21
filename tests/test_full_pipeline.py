@@ -170,5 +170,9 @@ def test_full_pipeline_produces_docx_and_manifest() -> None:
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["subsidy"]["program_id"] == "sample_hanro_kaitaku_v1"
-    assert manifest["template_fill"]["missing_keys"] == []
     assert manifest["live_llm"] is False
+    # Profile-driven assembly populates these fields
+    assert manifest["length_validation"]["compliance_pct"] >= 80.0
+    assert manifest["quality_score"]["total"] >= 60
+    assert "chart_revenue_trend" in manifest["assembly"]["charts_inserted"]
+    assert "table_schedule" in manifest["assembly"]["tables_inserted"]
