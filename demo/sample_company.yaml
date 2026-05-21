@@ -1,0 +1,82 @@
+# 架空案件 — このデータは完全に架空のものです。実在の事業者・人物・住所とは関係ありません。
+applicant_id: SAMPLE_DEMO_001
+
+company:
+  name: 株式会社サンプル珈琲
+  representative: 山田太郎
+  founded: "2018-04"
+  employees: 4
+  industry: 飲食業（カフェ）
+  prefecture: 東京都
+  city: 杉並区
+  business_description: |
+    住宅街の小さなスペシャルティコーヒー専門店。
+    自家焙煎の豆販売とイートインの両方を提供。
+    平日は近隣住民、週末は遠方からの来店客が中心。
+
+financial:
+  past_3y_pl:
+    - year: 2022
+      revenue: 18500000
+      operating_profit: 850000
+    - year: 2023
+      revenue: 21300000
+      operating_profit: 1200000
+    - year: 2024
+      revenue: 22800000
+      operating_profit: 1450000
+  prior_year_status: 黒字  # 加点判定に使う：黒字→事業環境変化加点、赤字→赤字事業者加点
+
+strengths:
+  - 自家焙煎の品質に対する常連客の評価が高い
+  - 店主が産地直接買付けのルートを持っている
+  - 平日午前のテイクアウトリピート率が60%超
+  - SNS（Instagram）フォロワー2,800人
+
+challenges:
+  - 売上が店舗キャパに上限されている（席数12席）
+  - 物価高騰で生豆原価が前年比+18%、転嫁できていない
+  - 自家焙煎豆の通販ECがなく遠方需要を取り込めていない
+  - 新規顧客のリピート転換率が30%と低い
+
+target_market:
+  - 自宅で本格コーヒーを楽しむ層（コロナ後の在宅需要）
+  - スペシャルティコーヒーに関心のある全国の愛好家
+  - 法人ギフト需要（中元・歳暮の高級珈琲ギフト）
+
+planned_project:
+  goal: 自家焙煎豆の通販ECサイト立ち上げによる販路開拓
+  initiatives:
+    - LP制作とECサイト構築（ウェブサイト関連費）
+    - パッケージデザイン刷新（広報費）
+    - 試飲会・体験ワークショップ開催（広報費）
+    - SNS広告とインフルエンサー連携（広報費）
+  expected_outcomes:
+    - 既存来店客の半数を通販リピーター化（720名のリスト化）
+    - 通販売上で売上+25%（年商2,850万円目標）
+    - 法人ギフト3社獲得（単価10万円×3=30万円）
+
+expenses:
+  total: 1500000
+  breakdown:
+    - category: ウェブサイト関連費
+      item: ECサイト制作（Shopify構築・撮影・コピーライティング）
+      amount: 500000
+    - category: 広報費
+      item: パッケージデザイン・撮影
+      amount: 300000
+    - category: 広報費
+      item: 試飲会・ワークショップ運営
+      amount: 200000
+    - category: 広報費
+      item: SNS広告運用
+      amount: 350000
+    - category: 広報費
+      item: 印刷物（リーフレット・名刺）
+      amount: 150000
+  subsidy_amount: 1000000  # 補助率2/3、上限1,000,000円想定
+  self_funding: 500000
+
+bonus_points:
+  wage_increase: true  # 賃上げ加点（事業場内最低賃金 +50円）
+  env_change: true  # 事業環境変化加点（物価高騰）
