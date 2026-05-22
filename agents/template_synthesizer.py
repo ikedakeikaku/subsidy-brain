@@ -41,14 +41,16 @@ class TemplateSynthesizer:
         *,
         fetched_form_paths: dict[str, str] | None = None,
         templates_root: Path | str = "templates",
+        drafts_root: Path | str = ".cache/drafts",
     ) -> tuple[Path, str]:
         """Return ``(template_path, source)`` where ``source`` is one of:
 
           * ``"official"`` — file came from GuidelineFetcher / official URL
           * ``"local"`` — file was committed under ``templates/<program_id>/``
+            (this is the only thing that ever lives in ``templates/``)
           * ``"draft"`` — a clearly-labelled DRAFT skeleton synthesised from
-            the profile. Carries a warning header so it can't be mistaken
-            for the publishing body's actual form.
+            the profile. **Always written under ``.cache/drafts/`` so it
+            can't be confused with a user-committed official template.**
         """
         # 1. Use the official 様式 if it actually downloaded
         if fetched_form_paths:
@@ -63,7 +65,8 @@ class TemplateSynthesizer:
                         )
                         return p, "official"
 
-        # 2. Look in templates/<program_id>/
+        # 2. Look in templates/<program_id>/ — only user-committed official
+        #    forms live here. Runtime synthesised drafts never write here.
         root = Path(templates_root) / profile.program_id
         if root.exists():
             for cand in root.glob("様式*.docx"):
@@ -72,10 +75,10 @@ class TemplateSynthesizer:
                 if not cand.name.startswith("_"):
                     return cand, "local"
 
-        # 3. Synthesise a DRAFT skeleton from the profile. Never claim it
-        #    is the official 様式 — the synthesised file carries a warning
-        #    header so reviewers immediately spot a non-official document.
-        out = Path(templates_root) / profile.program_id / "_draft_skeleton.docx"
+        # 3. Synthesise a DRAFT skeleton under .cache/drafts/<program_id>/
+        #    The warning header inside the docx and the explicit "draft"
+        #    source make it impossible to mistake for the official 様式.
+        out = Path(drafts_root) / profile.program_id / "_draft_skeleton.docx"
         return self._synthesise(profile, out), "draft"
 
     # ------------------------------------------------------------------
