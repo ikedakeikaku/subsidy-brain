@@ -177,28 +177,63 @@ async def run(query: str, *, live: bool, use_cache: bool) -> None:
     final_estimate = estimate_adoption_probability(profile, company, story)
 
     # ----- 7. Pick / synthesise the template -----------------------------
-    template = TemplateSynthesizer().get_template(
+    # Build the official-style sample template if needed
+    sample = ROOT / "templates" / "official_style_sample" / "様式2_経営計画書.docx"
+    if not sample.exists():
+        try:
+            from templates.build_official_style_template import (
+                build_official_style_form,
+            )
+            build_official_style_form()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("could not build official-style sample: %s", e)
+    template_path, template_source = TemplateSynthesizer().get_template(
         profile,
         fetched_form_paths=fetch_manifest.get("form_paths", {}),
         templates_root="templates",
     )
-    logger.info("template: %s", template)
+    logger.info("template: %s (source=%s)", template_path, template_source)
 
     # ----- 8. Assemble the final docx ------------------------------------
     out_path = ROOT / "demo" / "output" / f"{program.program_id}_application.docx"
-    assemble_result = assemble_document(
-        profile=profile,
-        company=company,
-        story=story,
-        out_path=out_path,
-        extra_metadata={
-            "補助金": profile.canonical_name,
-            "申請者": company["company"]["name"],
-            "生成日時": datetime.now().isoformat(timespec="seconds"),
-            "live_llm": "yes" if live else "no",
-        },
-        quality_block=None,
-    )
+
+    # When we have a real (or realistic-shaped) docx, fill it preserving
+    # all formatting. Otherwise build the document from the profile.
+    if template_source in {"official", "local", "official_style_sample"}:
+        from tools.official_form_filler import fill_official_form
+        fill_report = fill_official_form(
+            template_path=template_path,
+            out_path=out_path,
+            profile=profile,
+            story=story,
+            company=company,
+        )
+        assemble_result = {
+            "output": str(out_path),
+            "sections_rendered": fill_report["sections_filled"],
+            "charts_inserted": fill_report.get("charts_appended", []),
+            "tables_inserted": fill_report["tables_appended"],
+            "fill_method": "official_form_filler",
+            "template_source": template_source,
+            "sections_not_found": fill_report["sections_not_found"],
+            "applicant_cells_filled": fill_report["applicant_cells_filled"],
+        }
+    else:
+        assemble_result = assemble_document(
+            profile=profile,
+            company=company,
+            story=story,
+            out_path=out_path,
+            extra_metadata={
+                "補助金": profile.canonical_name,
+                "申請者": company["company"]["name"],
+                "生成日時": datetime.now().isoformat(timespec="seconds"),
+                "live_llm": "yes" if live else "no",
+            },
+            quality_block=None,
+        )
+        assemble_result["fill_method"] = "document_assembler"
+        assemble_result["template_source"] = template_source
 
     # ----- 9. Log the run ------------------------------------------------
     log_id = skill_store.save_execution_log(
@@ -268,6 +303,8 @@ async def run(query: str, *, live: bool, use_cache: bool) -> None:
           f"{', '.join(assemble_result['charts_inserted']) or '—'}")
     print(f"   tables inserted    : "
           f"{', '.join(assemble_result['tables_inserted']) or '—'}")
+    print(f"   fill method        : {assemble_result.get('fill_method', '—')}")
+    print(f"   template source    : {assemble_result.get('template_source', '—')}")
     print(f"   adoption probability: {final_estimate['total']}/100 "
           f"({'達成' if final_estimate['passed'] else '未達'})")
     if refinement["iterations"]:

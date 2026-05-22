@@ -41,12 +41,13 @@ class TemplateSynthesizer:
         *,
         fetched_form_paths: dict[str, str] | None = None,
         templates_root: Path | str = "templates",
-    ) -> Path:
-        """Return a usable template path. Generates one if needed.
+    ) -> tuple[Path, str]:
+        """Return ``(template_path, source)`` where ``source`` is one of:
 
-        ``fetched_form_paths`` is the dict ``GuidelineFetcher`` returns for
-        the downloaded official 様式 files (e.g. ``{"様式2": "/path/to/様式2.docx"}``).
-        If 様式2 is present and non-empty, we use it directly.
+          * ``"official"`` — file came from GuidelineFetcher / official URL
+          * ``"local"`` — file was committed under ``templates/<program_id>/``
+          * ``"official_style_sample"`` — bundled mock-real form (demo only)
+          * ``"synthesised"`` — generated from the profile on the fly
         """
         # 1. Use the official 様式 if it actually downloaded
         if fetched_form_paths:
@@ -59,19 +60,27 @@ class TemplateSynthesizer:
                             form_id,
                             p,
                         )
-                        return p
+                        return p, "official"
 
         # 2. Look in templates/<program_id>/
         root = Path(templates_root) / profile.program_id
         if root.exists():
             for cand in root.glob("様式*.docx"):
-                return cand
+                return cand, "local"
             for cand in root.glob("*.docx"):
-                return cand
+                if not cand.name.startswith("_"):
+                    return cand, "local"
 
-        # 3. Synthesise a template from the profile
+        # 3. Use the bundled "official-style" sample if present (demo only)
+        bundled = (
+            Path(templates_root) / "official_style_sample" / "様式2_経営計画書.docx"
+        )
+        if bundled.exists():
+            return bundled, "official_style_sample"
+
+        # 4. Synthesise a template from the profile
         out = Path(templates_root) / profile.program_id / "_synthesized.docx"
-        return self._synthesise(profile, out)
+        return self._synthesise(profile, out), "synthesised"
 
     # ------------------------------------------------------------------
 

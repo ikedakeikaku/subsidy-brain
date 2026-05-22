@@ -103,11 +103,12 @@ def test_template_synthesizer_generates_from_profile(tmp_path: Path) -> None:
     profile = asyncio.run(
         ProfileSynthesizer().synthesize("テスト補助金C")
     )
-    template = TemplateSynthesizer().get_template(
+    template, source = TemplateSynthesizer().get_template(
         profile, templates_root=tmp_path
     )
     assert template.exists()
     assert template.stat().st_size > 5_000
+    assert source == "synthesised"
 
     # Every section in the profile should have a corresponding placeholder
     from docx import Document
@@ -138,12 +139,13 @@ def test_template_synthesizer_prefers_fetched_form(tmp_path: Path) -> None:
     profile = asyncio.run(
         ProfileSynthesizer().synthesize("テスト補助金D")
     )
-    template = TemplateSynthesizer().get_template(
+    template, source = TemplateSynthesizer().get_template(
         profile,
         fetched_form_paths={"様式2_経営計画書": str(fake_official)},
         templates_root=tmp_path / "templates",
     )
     assert template == fake_official
+    assert source == "official"
 
 
 # ---------------------------------------------------------------------------
