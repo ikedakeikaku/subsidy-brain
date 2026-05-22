@@ -95,6 +95,47 @@ _SYNTHESIS_SYSTEM = """\
 JSON以外の前置きや解説は一切出力せず、JSONオブジェクトのみを返してください。
 """
 
+_FROM_PDF_SYSTEM = """\
+あなたは日本の中小企業向け補助金の公募要領を読解する専門家です。
+ユーザーが添付した「公募要領テキスト」を読み、申請書のセクション構造を
+JSON で返してください。
+
+ルール:
+- 公募要領に明記されたセクション名・章立てをそのまま反映する
+  （例: "1. 企業概要" / "2. 顧客ニーズと市場の動向" 等。「1-1.」のような
+   下位番号は公募要領に書いてあるとおりにする）
+- ＜経営計画＞ ＜補助事業計画＞ などの大ブロックも display_name に含める
+- 各セクションに「目標文字数」「最小文字数」「最大文字数」を付与する
+  （公募要領に書いてあれば優先、無ければ実申請書として妥当な数字を推定）
+- 加点項目は **bonus_items** に列挙（sections には入れない）
+  各 bonus_item に item_id（snake_case ASCII）/ display_name /
+  applicability_hint / body_prompt_hint を付与
+- 必須グラフ・必須テーブルも判断して列挙
+
+期待するJSONスキーマ:
+{
+  "program_id": "短いASCII識別子（例: jizoku_19）",
+  "canonical_name": "公式名称",
+  "quality_score_target": 85,
+  "sections": [
+    {"section_id": "...", "display_name": "...", "target_chars": ...,
+     "min_chars": ..., "max_chars": ..., "requires_data_paths": [...]},
+    ...
+  ],
+  "bonus_items": [
+    {"item_id": "...", "display_name": "...", "category": "...",
+     "weight_points": ..., "target_chars": ..., "min_chars": ...,
+     "max_chars": ..., "applicability_hint": "...",
+     "body_prompt_hint": "..."},
+    ...
+  ],
+  "charts": [...],
+  "tables": [...]
+}
+
+JSON以外の前置きや解説は一切出力せず、JSONオブジェクトのみを返してください。
+"""
+
 
 # ---------------------------------------------------------------------------
 # Fallback profiles
@@ -340,13 +381,31 @@ class ProfileSynthesizer:
     agent_name = "ProfileSynthesizer"
 
     async def synthesize(
-        self, subsidy_name: str, *, extra_context: str = ""
+        self,
+        subsidy_name: str,
+        *,
+        guideline_pdf_path: str | None = None,
+        extra_context: str = "",
     ) -> SubsidyProfile:
         """Return a SubsidyProfile for ``subsidy_name``.
 
-        Web-search providers are tried in order. If all fail, the fallback
-        default profile is returned and a warning is logged.
+        Lookup precedence:
+          1. If ``guideline_pdf_path`` is set and the file exists and is a
+             real PDF, read it with pdfplumber and ask Claude to extract
+             the section structure. This is the strongest source — the
+             output reflects what the publishing body actually wrote.
+          2. Otherwise web_search (Anthropic preferred, Perplexity fallback).
+          3. Otherwise the hardcoded ``_pick_fallback_family`` template.
         """
+        # Path 1: read the actual guideline PDF
+        if guideline_pdf_path and settings.anthropic_api_key:
+            profile = await self._synthesize_from_pdf(
+                guideline_pdf_path, subsidy_name
+            )
+            if profile is not None:
+                return profile
+
+        # Path 2: web search
         if not (settings.anthropic_api_key or settings.perplexity_api_key):
             logger.info(
                 "ProfileSynthesizer: no web-search credential set; using fallback."
@@ -381,6 +440,102 @@ class ProfileSynthesizer:
         if extra_context:
             body += f"\n\n## 追加コンテキスト\n{extra_context}"
         return body
+
+    async def _synthesize_from_pdf(
+        self, pdf_path: str, subsidy_name: str
+    ) -> SubsidyProfile | None:
+        """Read the official guideline PDF and ask Claude to extract the
+        section structure verbatim. Returns ``None`` on any failure so
+        the caller can fall through to web_search / fallback.
+        """
+        from pathlib import Path as _P
+
+        p = _P(pdf_path)
+        if not p.exists() or p.stat().st_size < 1024:
+            return None
+
+        try:
+            import pdfplumber
+        except ImportError:
+            logger.warning("pdfplumber not available; skipping PDF synthesis")
+            return None
+
+        try:
+            with pdfplumber.open(str(p)) as pdf:
+                # Concatenate page text. Real 公募要領 PDFs are ~30–60 pages;
+                # we cap at ~50k chars to fit Claude's input budget while
+                # still covering structure, scoring, and 加点項目 sections.
+                pages_text: list[str] = []
+                for page in pdf.pages:
+                    txt = page.extract_text() or ""
+                    if txt.strip():
+                        pages_text.append(txt)
+                full_text = "\n\n".join(pages_text)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("ProfileSynthesizer: PDF read failed: %s", e)
+            return None
+
+        if not full_text.strip():
+            return None
+
+        # Cap input size — Claude's context is large but we don't need
+        # post-30-page boilerplate (経費精算手続き等)
+        max_chars = 60_000
+        if len(full_text) > max_chars:
+            full_text = full_text[:max_chars] + "\n\n[以降の文章は省略]"
+
+        from tools.claude_client import call_claude_json
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "program_id": {"type": "string"},
+                "canonical_name": {"type": "string"},
+                "quality_score_target": {"type": "integer"},
+                "sections": {"type": "array"},
+                "bonus_items": {"type": "array"},
+                "charts": {"type": "array"},
+                "tables": {"type": "array"},
+            },
+            "required": ["sections"],
+        }
+
+        user_message = (
+            f"対象補助金: {subsidy_name}\n\n"
+            "## 公募要領テキスト（公式 PDF より抽出）\n\n"
+            f"{full_text}\n\n"
+            "上記の公募要領を読み取り、申請書のセクション構造を JSON で返してください。"
+            "セクション名は公募要領にある名称をそのまま使ってください。"
+        )
+
+        try:
+            payload = await call_claude_json(
+                system_prompt=_FROM_PDF_SYSTEM,
+                user_message=user_message,
+                json_schema=schema,
+                tool_name="extract_subsidy_profile",
+                max_tokens=8_192,
+                temperature=0.1,
+                cache_system=True,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("ProfileSynthesizer: Claude PDF extraction failed: %s", e)
+            return None
+
+        if not payload or not payload.get("sections"):
+            return None
+
+        # Fill in sensible defaults for any chart/table arrays the LLM
+        # forgot to emit so the downstream assembler still gets visuals.
+        payload.setdefault("charts", _GENERIC_FALLBACK["charts"])
+        payload.setdefault("tables", _GENERIC_FALLBACK["tables"])
+
+        logger.info(
+            "ProfileSynthesizer: extracted %d sections, %d bonus_items from PDF",
+            len(payload.get("sections") or []),
+            len(payload.get("bonus_items") or []),
+        )
+        return self._to_profile(payload, fallback_name=subsidy_name)
 
     def _fallback_profile(self, subsidy_name: str) -> SubsidyProfile:
         # Pick the closest-matching subsidy family — the bonus_items and

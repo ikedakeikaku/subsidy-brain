@@ -55,7 +55,7 @@ from agents.profile_synthesizer import ProfileSynthesizer  # noqa: E402
 from agents.subsidy_discoverer import discover_subsidy  # noqa: E402
 from agents.template_synthesizer import TemplateSynthesizer  # noqa: E402
 from demo.mock_story import MOCK_STORY  # noqa: E402
-from demo.story_builder_live import build_story_live  # noqa: E402
+from demo.story_builder_live import build_story_for_profile  # noqa: E402
 from schemas.skill import ExecutionLog  # noqa: E402
 from schemas.subsidy_registry import (  # noqa: E402
     SubsidyProgram,
@@ -99,26 +99,12 @@ async def run(query: str, *, live: bool, use_cache: bool) -> None:
         "discoverer: %s (forms=%d)", program.canonical_name, len(program.forms)
     )
 
-    # ----- 2. Synthesize SubsidyProfile (the real "judgment" step) -------
-    profile = profile_cache.load(program.program_id) if use_cache else None
-    if profile is None:
-        profile = await ProfileSynthesizer().synthesize(program.canonical_name)
-        # Lock the profile to the same program_id so caches line up
-        profile = profile.model_copy(update={"program_id": program.program_id})
-        profile_cache.save(profile)
-    logger.info(
-        "profile: sections=%d, charts=%d, tables=%d, target=%d字",
-        len(profile.sections),
-        len(profile.charts),
-        len(profile.tables),
-        profile.total_target_chars,
-    )
-
-    # ----- 3. Fetch official guideline + forms ---------------------------
+    # ----- 2. Fetch official guideline + forms FIRST -----------------------
+    # We fetch BEFORE synthesizing the profile so that the synthesizer can
+    # read the actual 公募要領 PDF and extract the real section structure
+    # (instead of relying on web_search + hardcoded fallbacks).
     fetch_manifest: dict = {}
     if program.guideline_pdf_url or program.forms:
-        # GuidelineFetcher wants a registry to look up. Build an in-memory
-        # one-program registry for the call.
         reg_path = Path(".cache/tmp_registry.yaml")
         reg_path.parent.mkdir(parents=True, exist_ok=True)
         reg_path.write_text(
@@ -133,6 +119,33 @@ async def run(query: str, *, live: bool, use_cache: bool) -> None:
     else:
         logger.info("fetcher: no URLs in program shell; skipping")
 
+    # ----- 3. Synthesize SubsidyProfile (the real "judgment" step) -------
+    # If the guideline PDF was successfully downloaded, the synthesizer
+    # reads it and asks Claude to extract structure verbatim.
+    # Otherwise it falls back to web_search → hardcoded family template.
+    profile = profile_cache.load(program.program_id) if use_cache else None
+    if profile is None:
+        guideline_path = fetch_manifest.get("guideline_path") or None
+        # Only pass if the file actually has content
+        if guideline_path:
+            p = Path(guideline_path)
+            if not p.exists() or p.stat().st_size < 1024:
+                guideline_path = None
+        profile = await ProfileSynthesizer().synthesize(
+            program.canonical_name,
+            guideline_pdf_path=guideline_path,
+        )
+        # Lock the profile to the same program_id so caches line up
+        profile = profile.model_copy(update={"program_id": program.program_id})
+        profile_cache.save(profile)
+    logger.info(
+        "profile: sections=%d, charts=%d, tables=%d, target=%d字",
+        len(profile.sections),
+        len(profile.charts),
+        len(profile.tables),
+        profile.total_target_chars,
+    )
+
     # ----- 4. Research adoption examples ---------------------------------
     research = await AdoptionResearcher().research(
         program, industry=company["company"]["industry"]
@@ -145,31 +158,25 @@ async def run(query: str, *, live: bool, use_cache: bool) -> None:
             raise SystemExit(
                 "--live requires ANTHROPIC_API_KEY (in .env or environment)"
             )
-        # Use the discovered guideline text if we have it, else a short
-        # research summary fetched via AdoptionResearcher.
-        guideline_text = (
-            research.get("findings", "")
-            or f"対象補助金: {program.canonical_name}（最新の公募要領を参照してください）"
+        # Profile-driven per-section generation: each section gets its own
+        # Claude call sized to its target_chars budget. Falls back to mock
+        # for any section that fails.
+        research_text = research.get("findings", "") or ""
+        logger.info(
+            "story: generating %d sections via Claude (live, per-section)",
+            len(profile.sections),
         )
-        logger.info("story: calling Claude (live)")
-        live_story = await build_story_live(company, guideline_text)
-        story = {
-            "section_1_1": live_story.get("company_overview", ""),
-            "section_1_2": live_story.get("sales_situation", ""),
-            "section_1_3": live_story.get("challenges", ""),
-            "section_4_2": live_story.get("strategy", ""),
-            "section_effect": live_story.get("expected_outcome", ""),
-            "bonus_env_change": live_story.get("bonus_env_change", ""),
-        }
-        for sec_id, txt in MOCK_STORY.items():
-            story.setdefault(sec_id, txt)
+        story = await build_story_for_profile(
+            company, profile, research_findings=research_text
+        )
     else:
         logger.info("story: offline mock LLM (pass --live for real Claude)")
-        story = dict(MOCK_STORY)
-    # Make sure every section the synthesised profile expects has *some*
-    # text — backfill with the mock equivalent if missing.
+        story = {}
+    # Backfill any section the LLM didn't produce with the mock equivalent
+    # (matched by section_id if available, else left blank).
     for spec in profile.sections:
-        story.setdefault(spec.section_id, MOCK_STORY.get(spec.section_id, ""))
+        if not story.get(spec.section_id):
+            story[spec.section_id] = MOCK_STORY.get(spec.section_id, "")
 
     # ----- 5b. Per-subsidy bonus-item evaluation ------------------------
     # profile.bonus_items differs by subsidy (持続化補助金 has 事業環境変化,

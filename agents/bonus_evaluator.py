@@ -100,6 +100,28 @@ _ITEM_DETECTORS = {
     "deficit": _detect_deficit,
 }
 
+# Keyword-based aliasing so item_ids extracted from real 公募要領 PDFs
+# (e.g. "bonus_business_env_change", "bonus_red_deficit_wage_hike",
+# "bonus_wage_hike") still hit the right detector even when the LLM
+# names them differently per subsidy.
+_DETECTOR_KEYWORDS: list[tuple[tuple[str, ...], str]] = [
+    (("env_change", "事業環境変化", "環境変化"), "env_change"),
+    (("wage_increase", "wage_hike", "賃金引上げ", "賃上げ"), "wage_increase"),
+    (("deficit", "赤字"), "deficit"),
+]
+
+
+def _resolve_detector(item: BonusItemSpec):
+    """Return the best-matching detector for ``item`` by exact id then
+    by keyword fallback. Falls through to the generic detector."""
+    if item.item_id in _ITEM_DETECTORS:
+        return _ITEM_DETECTORS[item.item_id]
+    haystack = f"{item.item_id} {item.display_name}"
+    for keywords, key in _DETECTOR_KEYWORDS:
+        if any(k in haystack for k in keywords):
+            return _ITEM_DETECTORS[key]
+    return _detect_generic
+
 
 # ---------------------------------------------------------------------------
 # Body generation
@@ -248,7 +270,7 @@ class BonusEvaluator:
     ) -> list[BonusItemResult]:
         results: list[BonusItemResult] = []
         for item in profile.bonus_items:
-            detector = _ITEM_DETECTORS.get(item.item_id, _detect_generic)
+            detector = _resolve_detector(item)
             try:
                 applicable, reasoning = detector(item, company) if detector is _detect_generic else detector(company)
             except TypeError:

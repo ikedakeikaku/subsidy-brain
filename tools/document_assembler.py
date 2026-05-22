@@ -328,6 +328,44 @@ def assemble_document(
                 _add_table_to_doc(doc, table_spec, data)
                 inserted_tables.append(table_spec.table_id)
 
+        # Trailing fallback: any chart/table whose place_after_section was
+        # empty / unmatched (e.g. profile came from PDF extraction where
+        # the LLM didn't fill in placement) gets appended at the end so
+        # we never silently drop a declared visual asset.
+        for chart in profile.charts:
+            if chart.chart_id in inserted_charts:
+                continue
+            data = _get(company, chart.data_path)
+            if chart.chart_type == ChartType.EFFECT_BEFORE_AFTER:
+                pl = _get(company, "financial.past_3y_pl") or []
+                expected = (
+                    _get(company, "planned_project.expected_outcomes") or []
+                )
+                if pl:
+                    last = pl[-1].get("revenue", 0)
+                    after = int(last * 1.25)
+                    for item in expected:
+                        if isinstance(item, dict) and "target_revenue" in item:
+                            after = int(item["target_revenue"])
+                            break
+                    data = {"before": last, "after": after}
+            out_png = tmp_root / f"{chart.chart_id}.png"
+            rendered = _generate_chart(chart, data, out_png)
+            if rendered:
+                p = doc.add_paragraph()
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                p.add_run().add_picture(str(rendered), width=Cm(chart.width_cm))
+                cap = doc.add_paragraph(f"図. {chart.title}")
+                cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                inserted_charts.append(chart.chart_id)
+
+        for table_spec in profile.tables:
+            if table_spec.table_id in inserted_tables:
+                continue
+            data = _get(company, table_spec.data_path)
+            _add_table_to_doc(doc, table_spec, data)
+            inserted_tables.append(table_spec.table_id)
+
         # Optional: quality score block at the end
         if quality_block:
             doc.add_heading("自己採点（subsidy-brain による品質チェック結果）", level=1)

@@ -29,6 +29,19 @@ from schemas.subsidy_profile import SubsidyProfile
 logger = logging.getLogger(__name__)
 
 
+def _is_valid_docx(path: Path) -> bool:
+    """Return True iff ``path`` is a real .docx package (a ZIP whose
+    contents include word/document.xml). HTML or PDF served behind a
+    .docx filename will fail this check."""
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(path) as z:
+            return "word/document.xml" in z.namelist()
+    except (zipfile.BadZipFile, OSError):
+        return False
+
+
 class TemplateSynthesizer:
     """Materialise a .docx template for a given profile."""
 
@@ -52,18 +65,32 @@ class TemplateSynthesizer:
             the profile. **Always written under ``.cache/drafts/`` so it
             can't be confused with a user-committed official template.**
         """
-        # 1. Use the official 様式 if it actually downloaded
+        # 1. Use the official 様式 if it actually downloaded AND is a valid
+        #    .docx package. The filename can lie — publishers sometimes serve
+        #    an HTML landing page or a PDF behind a "様式2.docx" URL, and
+        #    python-docx will then raise PackageNotFoundError downstream.
         if fetched_form_paths:
             for form_id, path in fetched_form_paths.items():
                 p = Path(path)
-                if p.exists() and p.stat().st_size > 0 and p.suffix.lower() == ".docx":
-                    if "様式2" in form_id or "経営計画" in form_id or "事業計画" in form_id:
-                        logger.info(
-                            "TemplateSynthesizer: using official form %s -> %s",
-                            form_id,
-                            p,
-                        )
-                        return p, "official"
+                if not (p.exists() and p.stat().st_size > 0):
+                    continue
+                if p.suffix.lower() != ".docx":
+                    continue
+                if not _is_valid_docx(p):
+                    logger.warning(
+                        "TemplateSynthesizer: %s is not a real .docx package "
+                        "(probably an HTML page or PDF served at the URL); "
+                        "skipping",
+                        p,
+                    )
+                    continue
+                if "様式2" in form_id or "経営計画" in form_id or "事業計画" in form_id:
+                    logger.info(
+                        "TemplateSynthesizer: using official form %s -> %s",
+                        form_id,
+                        p,
+                    )
+                    return p, "official"
 
         # 2. Look in templates/<program_id>/ — only user-committed official
         #    forms live here. Runtime synthesised drafts never write here.

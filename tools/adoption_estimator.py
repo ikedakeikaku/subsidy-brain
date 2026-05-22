@@ -113,20 +113,39 @@ def _signal_problem_solution_alignment(company: dict, story: dict[str, str]) -> 
 
 
 def _signal_bonus_points_usage(company: dict, story: dict[str, str]) -> Signal:
-    """Up to 15 points. 加点項目本文の充実度."""
+    """Up to 15 points. Counts all ``bonus_*`` keys in ``story`` with
+    sufficient body text — handles publisher-specific item_ids extracted
+    from real 公募要領 (e.g. ``bonus_business_env_change``,
+    ``bonus_wage_hike``, ``bonus_red_deficit_wage_hike``)."""
     score = 0
     notes: list[str] = []
-    env = story.get("bonus_env_change", "")
+
+    # Generic detection: count any bonus_* key whose body clears 200 chars
+    bonus_keys_filled = [
+        (k, len(v))
+        for k, v in story.items()
+        if k.startswith("bonus_") and isinstance(v, str) and len(v) >= 200
+    ]
+    if bonus_keys_filled:
+        score += min(10, 3 * len(bonus_keys_filled))
+        names = ", ".join(f"{k} ({n}字)" for k, n in bonus_keys_filled[:3])
+        notes.append(f"加点本文: {names}")
+
+    # Additional credit for company-declared eligibilities
     bonus_block = company.get("bonus_points") or {}
-
-    if bonus_block.get("env_change") and len(env) >= 300:
-        score += 8
-        notes.append(f"事業環境変化加点本文 {len(env)}字")
     if bonus_block.get("wage_increase"):
-        score += 7
+        score += 3
         notes.append("賃金引上げ加点を申請")
+    if bonus_block.get("env_change"):
+        score += 2
+        notes.append("事業環境変化加点を申請")
 
-    weak = "bonus_env_change" if score < 8 else None
+    score = min(score, 15)
+    weak = None if score >= 10 else (
+        # Suggest refining whichever bonus key is shortest, so refinement_loop
+        # has something to target.
+        next(iter(k for k, _ in bonus_keys_filled), "bonus_env_change")
+    )
     return Signal(
         name="加点項目活用",
         weight=15,
