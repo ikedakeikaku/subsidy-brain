@@ -384,22 +384,31 @@ class ProfileSynthesizer:
         self,
         subsidy_name: str,
         *,
+        form_docx_paths: list[str] | None = None,
         guideline_pdf_path: str | None = None,
         additional_pdf_paths: list[str] | None = None,
         extra_context: str = "",
     ) -> SubsidyProfile:
         """Return a SubsidyProfile for ``subsidy_name``.
 
-        Lookup precedence:
-          1. If ``guideline_pdf_path`` (+ optional additional docs like 入力
-             ガイド・記載例・FAQ) are set and at least one is a real PDF,
-             read them all with pdfplumber and ask Claude to extract the
-             section structure. **Strongest source** — the output reflects
-             what the publishing body actually wrote, plus any auxiliary
-             guidance the publisher distributes alongside.
-          2. Otherwise web_search (Anthropic preferred, Perplexity fallback).
-          3. Otherwise the hardcoded ``_pick_fallback_family`` template.
+        Lookup precedence (strongest to weakest):
+          0. ``form_docx_paths``: if any real 様式 .docx is available
+             (either fetched or committed by the user under
+             ``templates/<program_id>/``), read its headings / tables
+             **verbatim**. The publishing body wrote these — nothing
+             else should be trusted over them.
+          1. ``guideline_pdf_path`` (+ optional 入力ガイド・記載例): read
+             the 公募要領 PDF and ask Claude to extract structure.
+          2. web_search (Anthropic preferred, Perplexity fallback).
+          3. The hardcoded ``_pick_fallback_family`` template.
         """
+        # Path 0: read the official 様式 docx directly
+        profile = self._synthesize_from_form_docx(
+            form_docx_paths or [], subsidy_name
+        )
+        if profile is not None:
+            return profile
+
         # Path 1: read the actual guideline PDF + auxiliary docs
         if guideline_pdf_path and settings.anthropic_api_key:
             profile = await self._synthesize_from_pdf(
@@ -445,6 +454,47 @@ class ProfileSynthesizer:
         if extra_context:
             body += f"\n\n## 追加コンテキスト\n{extra_context}"
         return body
+
+    def _synthesize_from_form_docx(
+        self, form_docx_paths: list[str], subsidy_name: str
+    ) -> SubsidyProfile | None:
+        """Read a real 様式 .docx and build a profile from its headings
+        and table structure. Returns ``None`` if no valid docx is among
+        the supplied paths.
+        """
+        from tools.docx_structure_reader import read_form_docx
+
+        for path in form_docx_paths:
+            extracted = read_form_docx(path)
+            if not extracted:
+                continue
+
+            logger.info(
+                "ProfileSynthesizer: structure extracted from form docx %s "
+                "(%d sections, %d tables)",
+                path,
+                len(extracted["sections"]),
+                len(extracted.get("tables") or []),
+            )
+
+            # Re-shape into our profile payload (charts/tables are
+            # carried over from the generic fallback so the assembler
+            # still gets visuals to embed).
+            payload: dict[str, Any] = {
+                "program_id": _slugify(subsidy_name),
+                "canonical_name": subsidy_name,
+                "quality_score_target": 85,
+                "sections": extracted["sections"],
+                "charts": _GENERIC_FALLBACK["charts"],
+                "tables": _GENERIC_FALLBACK["tables"],
+                "bonus_items": [
+                    s
+                    for s in extracted["sections"]
+                    if s["section_id"].startswith("bonus_")
+                ],
+            }
+            return self._to_profile(payload, fallback_name=subsidy_name)
+        return None
 
     @staticmethod
     def _read_pdf(path: str | None) -> str:

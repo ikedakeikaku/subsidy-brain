@@ -133,6 +133,21 @@ async def run(query: str, *, live: bool, use_cache: bool) -> None:
             if not p.exists() or p.stat().st_size < 1024:
                 guideline_path = None
 
+        # 様式 docx that survived: either fetched (HTML-recovery may have
+        # produced a real docx) or user-committed under templates/<id>/
+        form_docx_paths: list[str] = []
+        for path in (fetch_manifest.get("form_paths") or {}).values():
+            pp = Path(path)
+            if pp.exists() and pp.stat().st_size >= 1024 and pp.suffix == ".docx":
+                form_docx_paths.append(str(pp))
+        local_templates_dir = Path("templates") / program.program_id
+        if local_templates_dir.exists():
+            for pp in local_templates_dir.glob("様式*.docx"):
+                form_docx_paths.append(str(pp))
+            for pp in local_templates_dir.glob("*.docx"):
+                if not pp.name.startswith("_") and str(pp) not in form_docx_paths:
+                    form_docx_paths.append(str(pp))
+
         # Auxiliary docs that survived the fetcher's HTML-recovery step
         # (only PDFs are useful for the synthesizer right now)
         aux_pdf_paths: list[str] = []
@@ -143,6 +158,7 @@ async def run(query: str, *, live: bool, use_cache: bool) -> None:
 
         profile = await ProfileSynthesizer().synthesize(
             program.canonical_name,
+            form_docx_paths=form_docx_paths,
             guideline_pdf_path=guideline_path,
             additional_pdf_paths=aux_pdf_paths,
         )
