@@ -10,27 +10,36 @@
 
 ## 30秒で：何が動くのか
 
-補助金IDを1つ渡すと、以下が**全自動**で走ります：
+**補助金の名前を1行渡せば、人間コンサルと同じ動きで申請書を作る**：
 
-1. 補助金マスタを引いて公募要領 PDF と公式 Word/Excel 様式を**自動ダウンロード＋キャッシュ**
-2. Web で**採択事例を自動調査**し、業種別ナレッジとしてスキルストアに蓄積
-3. 公募要領の不変条件（経費区分・審査基準・文字数上限）を構造化
-4. 事業者ヒアリング・決算データと統合して**ストーリーを Claude で構築**
-5. 補助金ごとの **SubsidyProfile** に従って組み立て（セクション構造・目標文字数・必須グラフ・必須テーブル）
-6. 月次売上推移グラフ・効果のbefore/afterグラフを**自動生成して埋め込み**
-7. スケジュール表・経費明細表を**自動生成して挿入**
-8. **6軸の採択確率推定**を実施（自社固有データ・課題→施策対応・加点項目活用・具体数値密度・文字数達成・図表配置）
-9. **目標未達なら自動で改善ループ**を回し、弱いセクションを Claude で書き直し
-10. **Excel 様式（経費明細書 等）はフォーマット保持で充填**（drawings/罫線/conditional formatting を壊さない）
-11. すべての実行を学習層に記録し、**次の案件で活用**
+```bash
+uv run python demo/run_natural_demo.py "持続化補助金 第19回"
+uv run python demo/run_natural_demo.py --live "ものづくり補助金 第18次"
+uv run python demo/run_natural_demo.py --no-cache "省力化投資補助金 第2回"
+```
+
+事前に YAML を整備しなくてよい。エージェントが補助金ごとに：
+
+1. **SubsidyDiscoverer** が公式サイトの URL と様式 URL を Web 検索で発見
+2. **ProfileSynthesizer** が公募要領を読み込み、セクション構造・文字数・加点項目・必須グラフ/表を**その場で判断**して SubsidyProfile を合成
+3. **profile_cache** が合成結果をディスクに保存（次回は瞬時に再利用）
+4. **GuidelineFetcher** が公募要領 PDF と公式 Word/Excel 様式を自動ダウンロード＋キャッシュ
+5. **AdoptionResearcher** が業種別の採択事例を Web 調査し、スキルストアに蓄積
+6. **TemplateSynthesizer** が公式 docx をそのまま使う（取得できれば）／なければ profile から動的に生成
+7. **StoryBuilder**（Claude）が事業者ヒアリング・決算データを統合してストーリーを構築
+8. **document_assembler** が profile に従ってグラフ・テーブルを埋め込み
+9. **adoption_estimator** が6軸で採択確率を採点
+10. **refinement_loop** が目標未達なら最弱セクションを特定→Claudeで書き直し→再採点を最大Nイテレーション繰り返す
+11. **xlsx_filler** が Excel 様式（経費明細書 等）をフォーマット保持で充填（drawings/罫線/conditional formatting を壊さない）
+12. すべての実行を **skill_store** に記録し、フィードバック（採択／不採択）で次回の生成パターンに重み付け
 
 ```bash
 git clone https://github.com/ikedakeikaku/subsidy-brain && cd subsidy-brain
 uv sync --extra dev
-uv run pytest -ra                              # 21 tests
-uv run python demo/run_full_demo.py            # 一気通貫デモ（offline mock）
+uv run pytest -ra                              # 35 tests
+uv run python demo/run_natural_demo.py "持続化補助金 第19回"  # 自然言語で1コマンド
 ANTHROPIC_API_KEY=sk-ant-... \
-  uv run python demo/run_full_demo.py --live   # 実 Claude 呼び出し
+  uv run python demo/run_natural_demo.py --live "ものづくり補助金 第18次"
 ```
 
 ### デモ出力サンプル
@@ -176,31 +185,22 @@ AFTER:  66/100  (passed=True)
 
 リファインメント履歴は `manifest.json` に保存され、スキルストアに学習対象として記録されます。
 
-### 実補助金プリセット（`presets/`）
+### `presets/` は任意（オフラインCI例 / オーバーライド用）
 
-3つの主要補助金に対する registry + profile を同梱。**同じ DocumentBuilder
-が補助金を切り替えて動作**することがテストで検証されています
-（test_document_builder_works_for_three_subsidies）。
+`presets/` 配下の YAML は**もう必須ではない**。エージェントが補助金ごとに
+profile を合成するため、新しい補助金に対応するために事前準備は不要。
 
-| 補助金 | registry | profile | セクション数 |
-|---|---|---|---|
-| 小規模事業者持続化補助金 第19回 | `presets/jizoku_19.yaml` | `presets/jizoku_19_profile.yaml` | 11 |
-| ものづくり・商業・サービス補助金 第18次 | `presets/monozukuri_v18.yaml` | `presets/monozukuri_v18_profile.yaml` | 10 |
-| 中小企業省力化投資補助金 第2回 | `presets/shoryokuka_v2.yaml` | `presets/shoryokuka_v2_profile.yaml` | 8 |
+何のために残しているか：
 
-それぞれセクション構造・必須グラフ・必須テーブルが異なる（ものづくりは
-技術優位性／投資回収、省力化は労働生産性向上率／賃金引上げ計画 を要求）。
-**コードは1本、profile YAML だけ差し替え**で全てに対応します。
+- **オフライン CI 例** — `ANTHROPIC_API_KEY` / `PERPLEXITY_API_KEY` が無い
+  環境で synthesizer がフォールバックする際の挙動を確認するため
+- **スキーマ例** — `jizoku_19_profile.yaml` を見れば synthesizer が出力
+  する形が分かる
+- **手動オーバーライド** — 自動合成された profile が気に入らないときに、
+  `presets/<id>_profile.yaml` に手書きで上書き保存すると、`profile_cache`
+  より優先して使われる
 
-```python
-# 同じ DocumentBuilder で3つの補助金を切り替え
-for preset in ["jizoku_19", "monozukuri_v18", "shoryokuka_v2"]:
-    DocumentBuildInput(template_id=preset, ...)
-```
-
-公開リポは構造とコードを同梱し、実 URL の埋め込みはユーザー自身か、
-`agents/subsidy_discoverer.py` で自動発見します（後述）。詳細は
-[`presets/README.md`](presets/README.md)。
+詳細は [`presets/README.md`](presets/README.md)。
 
 ### Web 検索の統一プロバイダ
 

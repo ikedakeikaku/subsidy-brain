@@ -1,54 +1,48 @@
-# Subsidy presets
+# Subsidy presets (optional)
 
-Starter registry entries for major Japanese SMB subsidies.
+**These files are no longer required**. The agent system synthesises a
+SubsidyProfile on the fly from a natural-language subsidy name via
+`agents/profile_synthesizer.py`, exactly as a human consultant would
+research a new programme they've never seen before.
 
-**Important:** these presets contain **structural skeletons** — the canonical
-name, issuing body, expected form list, scoring axes — but the URLs are
-**placeholders** that must be filled in with the actual public URLs for the
-specific round you're applying to.
-
-## Why structures, not URLs
-
-Subsidy URLs change every round (e.g. the 持続化補助金 changes its
-guideline PDF URL between 第18回 and 第19回, even though the form
-structure is largely stable). Hard-coding URLs in a public OSS repo would
-go stale within months.
-
-## How to use a preset
+The main entry point demonstrates this:
 
 ```bash
-# 1. Copy a preset to your local registry
-cp presets/jizoku_19.yaml my_registry/
-
-# 2. Open the YAML and fill in `guideline_pdf_url`, `forms[*].url`, and
-#    `application_deadline` with the actual values from the official
-#    公募要領 page.
-
-# 3. Point subsidy-brain at your registry
-SUBSIDY_REGISTRY=my_registry/jizoku_19.yaml uv run python demo/run_full_demo.py
+uv run python demo/run_natural_demo.py "持続化補助金 第19回"
+uv run python demo/run_natural_demo.py --live "ものづくり補助金 第18次"
+uv run python demo/run_natural_demo.py --no-cache "省力化投資補助金 第2回"
 ```
 
-## Or: discover them automatically
+Internally:
 
-If `PERPLEXITY_API_KEY` is set, the `SubsidyDiscoverer` agent can populate
-the URLs by Web search:
+  1. `SubsidyDiscoverer` finds the publishing body's official URLs.
+  2. `ProfileSynthesizer` decides the section structure / character limits
+     / required charts and tables by reading the guideline.
+  3. `profile_cache` (`.cache/profiles/<id>.json`) stores the result so
+     subsequent runs are instant.
 
-```bash
-PERPLEXITY_API_KEY=... uv run python -m agents.subsidy_discoverer "持続化補助金 第19回"
-```
+## What these YAML files are for
 
-Always verify the discovered URLs against the official source before
-submitting.
+The files in this directory remain available as:
 
-## Available presets
+  * **Offline-CI fixtures** — when no `ANTHROPIC_API_KEY` or
+    `PERPLEXITY_API_KEY` is configured, the synthesiser falls back to a
+    generic default profile. The named presets here are richer than that
+    fallback and let tests verify multi-subsidy behaviour without making
+    network calls.
+  * **Schema examples** — a new user reading the code can look at
+    `jizoku_19_profile.yaml` to understand what the synthesiser emits.
+  * **Override surface** — if you disagree with the synthesised profile
+    for a given subsidy, save your own under
+    `presets/<id>_profile.yaml`. The runtime will load this in
+    preference to re-synthesising.
 
 | File | Subsidy | Issuing body |
 |---|---|---|
-| `jizoku_19.yaml` | 小規模事業者持続化補助金 第19回 | 全国商工会連合会 / 日本商工会議所 |
-| `monozukuri_v18.yaml` | ものづくり・商業・サービス生産性向上促進補助金 第18次 | 全国中小企業団体中央会 |
-| `it_donyu_2026.yaml` | IT導入補助金 2026年枠 | 中小企業基盤整備機構 |
-| `jigyou_saikouchiku_v12.yaml` | 事業再構築補助金 第12回 | 中小企業庁 |
+| `jizoku_19.yaml` / `jizoku_19_profile.yaml` | 小規模事業者持続化補助金 第19回 | 全国商工会連合会 / 日本商工会議所 |
+| `monozukuri_v18.yaml` / `monozukuri_v18_profile.yaml` | ものづくり・商業・サービス補助金 第18次 | 全国中小企業団体中央会 |
+| `shoryokuka_v2.yaml` / `shoryokuka_v2_profile.yaml` | 中小企業省力化投資補助金 第2回 | 中小企業基盤整備機構 |
 
-Each preset comes with a matching `<id>_profile.yaml` declaring the
-section structure, target word counts, and required charts / tables for
-that subsidy.
+The deadlines, URLs, and award amounts in these files are placeholders.
+For real submission, override them with verified values from the publishing
+body's website.
