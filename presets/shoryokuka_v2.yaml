@@ -1,0 +1,32 @@
+programs:
+  - program_id: shoryokuka_v2
+    canonical_name: 中小企業省力化投資補助金（一般型）第2回
+    short_name: 省力化補助金
+    round_number: 2
+    issuing_body: 中小企業基盤整備機構
+    landing_url: https://example.invalid/shoryokuka_v2/landing
+    guideline_pdf_url: https://example.invalid/shoryokuka_v2/guideline.pdf
+    application_deadline: 2026-09-30
+    max_award_yen: 10000000       # 従業員規模別。一般型10〜20名想定
+    subsidy_rate: 0.5              # 1/2（小規模事業者は2/3）
+    forms:
+      - form_id: 様式1
+        name: 申請書（基本情報）
+        url: https://example.invalid/shoryokuka_v2/様式1.xlsx
+        local_path: templates/shoryokuka_v2/様式1.xlsx
+      - form_id: 様式2
+        name: 事業計画書
+        url: https://example.invalid/shoryokuka_v2/様式2.docx
+        local_path: templates/shoryokuka_v2/様式2.docx
+      - form_id: 様式3
+        name: 賃金引上げ計画書
+        url: https://example.invalid/shoryokuka_v2/様式3.docx
+        local_path: templates/shoryokuka_v2/様式3.docx
+      - form_id: 様式4
+        name: 設備投資内訳書
+        url: https://example.invalid/shoryokuka_v2/様式4.xlsx
+        local_path: templates/shoryokuka_v2/様式4.xlsx
+    keywords_for_research:
+      - 省力化投資補助金 一般型 採択事例
+      - 省力化補助金 投資回収期間 評価
+      - 省力化補助金 賃金引上げ加点

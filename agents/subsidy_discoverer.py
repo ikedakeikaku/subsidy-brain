@@ -1,7 +1,6 @@
-"""Discover a subsidy program's official URLs and forms from a natural-
-language name.
+"""Discover a subsidy program's official URLs from a natural-language name.
 
-The user says "持続化補助金 第19回". The system needs to know:
+The user says "持続化補助金 第19回". The system needs:
 
   * official landing URL
   * guideline PDF URL
@@ -10,13 +9,12 @@ The user says "持続化補助金 第19回". The system needs to know:
   * issuing body
 
 The registry can be hand-curated, but for a fresh subsidy or for users who
-don't want to maintain YAML, the discoverer runs a Perplexity research
-round and returns a ``SubsidyProgram`` draft that can either be inserted
-into a registry or used in-flight.
+don't want to maintain YAML, the discoverer runs a web search round
+(Anthropic-preferred, Perplexity fallback) and returns a ``SubsidyProgram``
+draft that can be inserted into a registry or used in-flight.
 
-Without ``PERPLEXITY_API_KEY`` the discoverer is a no-op (logs a warning,
-returns ``None``). This keeps CI and the public demo runnable without
-external credentials.
+Without any web-search credential the discoverer is a no-op (logs a
+warning, returns ``None``).
 """
 from __future__ import annotations
 
@@ -26,6 +24,7 @@ from typing import Any
 
 from config.settings import settings
 from schemas.subsidy_registry import SubsidyForm, SubsidyProgram
+from tools.web_search import web_search
 
 logger = logging.getLogger(__name__)
 
@@ -43,15 +42,15 @@ _DISCOVERY_SYSTEM = """\
 
 期待するJSONスキーマ:
 {
-  "program_id":          str,    // 例: "jizoku_19"
+  "program_id":          str,
   "canonical_name":      str,
-  "round_number":        int,    // 不明なら 0
+  "round_number":        int,
   "issuing_body":        str,
   "landing_url":         str,
   "guideline_pdf_url":   str,
-  "application_deadline":str,    // YYYY-MM-DD or ""
+  "application_deadline":str,
   "max_award_yen":       int,
-  "subsidy_rate":        float,  // 2/3なら 0.6667
+  "subsidy_rate":        float,
   "forms": [
     {"form_id": "様式1", "name": "申請書", "url": "...", "ext": "docx|xlsx|pdf"},
     ...
@@ -63,42 +62,30 @@ JSON以外の前置きや解説は一切出力せず、JSONオブジェクトの
 """
 
 
-def _user_message(query: str) -> str:
-    return (
-        f"対象補助金: {query}\n\n"
-        "上記の補助金について、公式URLと様式情報を可能な限り正確に調査してください。"
-    )
-
-
 async def discover_subsidy(query: str) -> SubsidyProgram | None:
-    """Return a SubsidyProgram draft, or None if Perplexity is unavailable.
+    """Return a SubsidyProgram draft, or None if no web-search credential.
 
     Caller should review the result (URLs in particular) before saving it
-    to the persistent registry — Perplexity can hallucinate URLs even when
-    asked to ground in official sources.
+    to the persistent registry — both web-search providers can hallucinate
+    URLs.
     """
-    if not settings.perplexity_api_key:
+    if not (settings.anthropic_api_key or settings.perplexity_api_key):
         logger.info(
-            "SubsidyDiscoverer: PERPLEXITY_API_KEY not set; cannot discover %r",
+            "SubsidyDiscoverer: no web-search credential set; cannot discover %r",
             query,
         )
         return None
 
-    from tools.perplexity_search import _call_perplexity
-
-    try:
-        result = await _call_perplexity(
-            system_prompt=_DISCOVERY_SYSTEM,
-            user_message=_user_message(query),
-            model="sonar",
-            temperature=0.1,
-            max_tokens=4096,
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.warning("SubsidyDiscoverer: research failed: %s", e)
+    result = await web_search(
+        f"対象補助金: {query}\n\n"
+        "上記の補助金について、公式URLと様式情報を可能な限り正確に調査してください。",
+        system_prompt=_DISCOVERY_SYSTEM,
+    )
+    if not result.answer:
+        logger.warning("SubsidyDiscoverer: empty answer from %s", result.provider)
         return None
 
-    payload = _extract_json(result.content)
+    payload = _extract_json(result.answer)
     if not payload:
         logger.warning("SubsidyDiscoverer: no JSON in response")
         return None
@@ -107,11 +94,10 @@ async def discover_subsidy(query: str) -> SubsidyProgram | None:
 
 
 def _extract_json(text: str) -> dict[str, Any] | None:
-    """Best-effort JSON extraction (Perplexity sometimes wraps in markdown)."""
-    candidates: list[str] = []
-
+    """Best-effort JSON extraction (LLMs sometimes wrap in markdown)."""
     import re
 
+    candidates: list[str] = []
     fenced = re.search(r"```(?:json)?\s*\n(.*?)\n```", text, re.DOTALL)
     if fenced:
         candidates.append(fenced.group(1))

@@ -178,19 +178,51 @@ AFTER:  66/100  (passed=True)
 
 ### 実補助金プリセット（`presets/`）
 
-実運用向けの registry/profile スターターを `presets/` に同梱：
+3つの主要補助金に対する registry + profile を同梱。**同じ DocumentBuilder
+が補助金を切り替えて動作**することがテストで検証されています
+（test_document_builder_works_for_three_subsidies）。
 
-| ファイル | 補助金 |
-|---|---|
-| `presets/jizoku_19.yaml` | 小規模事業者持続化補助金 第19回（4様式：docx×3 + xlsx×1） |
-| `presets/jizoku_19_profile.yaml` | 11セクション・目標8,300字構成、加点項目本文を含む profile |
-| （拡張予定）`monozukuri_v18.yaml` | ものづくり補助金 第18次 |
-| （拡張予定）`it_donyu_2026.yaml` | IT導入補助金 2026年枠 |
-| （拡張予定）`jigyou_saikouchiku_v12.yaml` | 事業再構築補助金 第12回 |
+| 補助金 | registry | profile | セクション数 |
+|---|---|---|---|
+| 小規模事業者持続化補助金 第19回 | `presets/jizoku_19.yaml` | `presets/jizoku_19_profile.yaml` | 11 |
+| ものづくり・商業・サービス補助金 第18次 | `presets/monozukuri_v18.yaml` | `presets/monozukuri_v18_profile.yaml` | 10 |
+| 中小企業省力化投資補助金 第2回 | `presets/shoryokuka_v2.yaml` | `presets/shoryokuka_v2_profile.yaml` | 8 |
 
-公開リポは構造とコードのみを同梱し、実 URL の埋め込みはユーザー自身が
-行うか、`agents/subsidy_discoverer.py`（Perplexity 駆動）で自動発見します。
-詳細は [`presets/README.md`](presets/README.md)。
+それぞれセクション構造・必須グラフ・必須テーブルが異なる（ものづくりは
+技術優位性／投資回収、省力化は労働生産性向上率／賃金引上げ計画 を要求）。
+**コードは1本、profile YAML だけ差し替え**で全てに対応します。
+
+```python
+# 同じ DocumentBuilder で3つの補助金を切り替え
+for preset in ["jizoku_19", "monozukuri_v18", "shoryokuka_v2"]:
+    DocumentBuildInput(template_id=preset, ...)
+```
+
+公開リポは構造とコードを同梱し、実 URL の埋め込みはユーザー自身か、
+`agents/subsidy_discoverer.py` で自動発見します（後述）。詳細は
+[`presets/README.md`](presets/README.md)。
+
+### Web 検索の統一プロバイダ
+
+`tools/web_search.py` は **Anthropic Claude の built-in web_search ツール**
+を優先的に使い、Perplexity をフォールバックとして使う統一インタフェース。
+
+| プロバイダ | 優先 | 用途 |
+|---|---|---|
+| Anthropic (`web_search_20250305`) | 第1 | 補助金URLの発見・採択事例調査 |
+| Perplexity (Sonar) | フォールバック | Anthropic web_search が利用できない環境向け |
+| none | 無キー時 | CI / 公開デモ向け safe no-op |
+
+`AdoptionResearcher` と `SubsidyDiscoverer` の両方が同じ抽象を使うので、
+プロバイダの切替はキー設定だけで完結します。
+
+### 運用観点（コスト・観測性）
+
+- **コスト追跡** `tools/cost_tracker.py`：全 Claude 呼び出しの token 消費を
+  agent 別に集計し、USD/JPY で表示。manifest.json に記録されるので、
+  どのエージェントが何円使ったかが事後検証できる
+- **構造化ログ** `tools/observability.py`：`configure_logging()` 1行で JSON
+  ログに切替。`run_id` で全エージェントのトレースが追える
 
 ### グラフ・表の自動生成
 

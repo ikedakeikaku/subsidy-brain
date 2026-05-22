@@ -85,7 +85,7 @@ def _system_block(system_prompt: str, cache: bool) -> Any:
     ]
 
 
-def _update_usage(response: Any) -> None:
+def _update_usage(response: Any, agent: str = "anonymous", model: str | None = None) -> None:
     usage = getattr(response, "usage", None)
     if usage is None:
         return
@@ -101,6 +101,15 @@ def _update_usage(response: Any) -> None:
             or 0,
         }
     )
+    try:
+        from tools.cost_tracker import cost_tracker
+        cost_tracker.record_from_claude_usage(
+            agent=agent,
+            model=model or settings.default_model,
+            usage=last_usage,
+        )
+    except Exception:  # noqa: BLE001 — cost tracking must never break the call
+        pass
 
 
 @_RETRY_DECORATOR

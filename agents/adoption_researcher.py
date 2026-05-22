@@ -1,15 +1,13 @@
 """Research adoption examples for a target subsidy program.
 
-For a given ``SubsidyProgram`` and an industry hint, query Perplexity for
+For a given ``SubsidyProgram`` and an industry hint, query the web for
 real-world adoption cases, extract structured findings, and persist them to
 the skill store under ``knowledge/adoption_patterns/<program_id>__<industry>``.
 
-Subsequent runs of StoryBuilder will pick these up via the standard
-few-shot injection path.
-
-Without a ``PERPLEXITY_API_KEY`` the researcher is a no-op (logs a warning,
-returns an empty findings list). This keeps CI and the public demo runnable
-without external credentials.
+The default provider is **Anthropic web search** (Claude's built-in
+``web_search`` tool), with Perplexity as fallback. Without either key the
+researcher is a no-op (logs a warning, returns an empty findings list) so
+CI and the public demo stay runnable.
 """
 from __future__ import annotations
 
@@ -19,6 +17,7 @@ from typing import Any
 from config.settings import settings
 from schemas.subsidy_registry import SubsidyProgram
 from tools.skill_store import skill_store
+from tools.web_search import web_search
 
 logger = logging.getLogger(__name__)
 
@@ -53,9 +52,6 @@ class AdoptionResearcher:
     agent_id = "#research"
     agent_name = "AdoptionResearcher"
 
-    def __init__(self, model: str = "sonar") -> None:
-        self.model = model
-
     async def research(
         self, program: SubsidyProgram, industry: str
     ) -> dict[str, Any]:
@@ -64,32 +60,24 @@ class AdoptionResearcher:
             "program_id": program.program_id,
             "industry": industry,
             "available": False,
+            "provider": "none",
             "findings": "",
             "citations": [],
             "knowledge_key": "",
         }
 
-        if not settings.perplexity_api_key:
+        if not (settings.anthropic_api_key or settings.perplexity_api_key):
             logger.info(
-                "AdoptionResearcher: PERPLEXITY_API_KEY not set; "
-                "skipping live research."
+                "AdoptionResearcher: no web-search credential set; skipping research."
             )
             return manifest
 
-        # Local import so the module imports without httpx if the user removes
-        # the optional perplexity tooling.
-        from tools.perplexity_search import _call_perplexity
-
-        try:
-            result = await _call_perplexity(
-                system_prompt=_RESEARCH_SYSTEM,
-                user_message=_user_message(program, industry),
-                model=self.model,
-                temperature=0.1,
-                max_tokens=4096,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning("AdoptionResearcher: research failed: %s", e)
+        result = await web_search(
+            _user_message(program, industry),
+            system_prompt=_RESEARCH_SYSTEM,
+        )
+        if not result.answer:
+            logger.info("AdoptionResearcher: empty answer from %s", result.provider)
             return manifest
 
         key = f"adoption_patterns__{program.program_id}__{industry}"
@@ -98,14 +86,16 @@ class AdoptionResearcher:
             {
                 "program_id": program.program_id,
                 "industry": industry,
-                "findings": result.content,
+                "provider": result.provider,
+                "findings": result.answer,
                 "citations": result.citations,
             },
         )
         manifest.update(
             {
                 "available": True,
-                "findings": result.content,
+                "provider": result.provider,
+                "findings": result.answer,
                 "citations": result.citations,
                 "knowledge_key": key,
             }

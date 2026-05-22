@@ -1,0 +1,33 @@
+programs:
+  - program_id: monozukuri_v18
+    canonical_name: ものづくり・商業・サービス生産性向上促進補助金 第18次
+    short_name: ものづくり補助金
+    round_number: 18
+    issuing_body: 全国中小企業団体中央会 / 中小企業庁
+    # PLACEHOLDER — replace with the actual 第18次 URLs
+    landing_url: https://example.invalid/monozukuri_v18/landing
+    guideline_pdf_url: https://example.invalid/monozukuri_v18/guideline.pdf
+    application_deadline: 2026-08-29
+    max_award_yen: 12500000       # 通常枠の上限例（1.25億円タイプも別途）
+    subsidy_rate: 0.5              # 1/2（小規模・再生事業者は2/3）
+    forms:
+      - form_id: 様式1
+        name: 事業計画書
+        url: https://example.invalid/monozukuri_v18/様式1.docx
+        local_path: templates/monozukuri_v18/様式1.docx
+      - form_id: 様式2
+        name: 経費明細書
+        url: https://example.invalid/monozukuri_v18/様式2.xlsx
+        local_path: templates/monozukuri_v18/様式2.xlsx
+      - form_id: 様式3
+        name: 設備投資内訳書
+        url: https://example.invalid/monozukuri_v18/様式3.xlsx
+        local_path: templates/monozukuri_v18/様式3.xlsx
+      - form_id: 様式4
+        name: 賃金引上げ計画の誓約書
+        url: https://example.invalid/monozukuri_v18/様式4.docx
+        local_path: templates/monozukuri_v18/様式4.docx
+    keywords_for_research:
+      - ものづくり補助金 第18次 採択事例
+      - ものづくり補助金 通常枠 賃上げ要件
+      - ものづくり補助金 設備投資 採択ポイント
