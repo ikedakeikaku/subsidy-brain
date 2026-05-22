@@ -213,6 +213,35 @@ def _get(data: Any, dotted: str) -> Any:
     return cur
 
 
+def _add_paragraphed_text(doc, body: str) -> None:
+    """Render a long body as multiple paragraphs split at blank-line
+    delimiters. Single ``\n`` inside a paragraph becomes a soft line break
+    (Word's ``<w:br/>``) so wrapping behaves like the source text.
+
+    Without this, ``doc.add_paragraph(body)`` collapses the entire body
+    into one un-broken block in Word — visually a wall of text even when
+    Claude emitted clean ``\n\n``-delimited paragraphs.
+    """
+    import re as _re
+
+    from docx.oxml import OxmlElement
+
+    text = (body or "").strip()
+    if not text:
+        doc.add_paragraph("")
+        return
+    for block in _re.split(r"\n\s*\n+", text):
+        block = block.strip()
+        if not block:
+            continue
+        p = doc.add_paragraph()
+        lines = block.split("\n")
+        for i, line in enumerate(lines):
+            if i > 0:
+                p.add_run().element.append(OxmlElement("w:br"))
+            p.add_run(line)
+
+
 def assemble_document(
     profile: SubsidyProfile,
     company: dict[str, Any],
@@ -280,7 +309,7 @@ def assemble_document(
                 continue  # not applicable for this company
             label = f"【{item.category}】{item.display_name}" if item.category else item.display_name
             doc.add_heading(label, level=2)
-            doc.add_paragraph(body)
+            _add_paragraphed_text(doc, body)
             bonus_rendered.append(item.item_id)
 
     inserted_charts: list[str] = []
@@ -292,7 +321,7 @@ def assemble_document(
         for section_spec in profile.sections:
             doc.add_heading(section_spec.display_name, level=1)
             text = story.get(section_spec.section_id, "")
-            doc.add_paragraph(text)
+            _add_paragraphed_text(doc, text)
 
             # Insert any chart that requests placement after this section
             for chart in profile.charts:

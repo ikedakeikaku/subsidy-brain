@@ -230,6 +230,8 @@ async def _generate_body_live(item: BonusItemSpec, company: dict) -> str:
         f"加点項目「{item.display_name}」の本文を、"
         f"事業者の事実関係に基づき、{item.min_chars}〜{item.max_chars}字で生成してください。"
         "前置きや説明文は一切出力せず、加点項目欄に貼り付ける本文だけを返してください。"
+        "可読性のため200〜400字ごとに段落を分け、段落間は空行を入れること。"
+        "マークダウン記号は使わず、日本語の見出し記号（【】、■、①②）で構造化する。"
     )
     user_message = (
         f"## 加点項目\n"

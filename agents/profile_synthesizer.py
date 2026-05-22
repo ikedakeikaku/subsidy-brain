@@ -175,7 +175,13 @@ _COMMON_TABLES: list[dict] = [
 
 
 def _section(
-    sid: str, name: str, target: int, *, paths: list[str] | None = None
+    sid: str,
+    name: str,
+    target: int,
+    *,
+    paths: list[str] | None = None,
+    min_chars: int | None = None,
+    max_chars: int | None = None,
 ) -> dict:
     """Build a SectionSpec dict with min/max defaulted to 65%/130% of target.
 
@@ -184,13 +190,17 @@ def _section(
         not target.
       * Refinement loop is allowed to pad up to target; we don't want it
         to falsely flag every section as "underfilled" on first draft.
+
+    ``min_chars`` / ``max_chars`` can be overridden when the publisher
+    specifies a strict cap (e.g. "事業名は30字以内" — max must equal 30,
+    not 130% of target).
     """
     return {
         "section_id": sid,
         "display_name": name,
         "target_chars": target,
-        "min_chars": int(target * 0.65),
-        "max_chars": int(target * 1.3),
+        "min_chars": int(target * 0.65) if min_chars is None else min_chars,
+        "max_chars": int(target * 1.3) if max_chars is None else max_chars,
         "requires_data_paths": paths or [],
     }
 
@@ -200,17 +210,38 @@ _JIZOKU_FALLBACK: dict[str, Any] = {
     "program_id": "jizoku_19",
     "canonical_name": "小規模事業者持続化補助金 第19回 通常枠",
     "quality_score_target": 85,
+    # Section layout follows the v6 template (docs/jizokuka_application_template.md
+    # in the operator repo): ＜経営計画＞ 1-1〜4-2 + ＜補助事業計画＞ 1〜4-2.
+    # Total narrative ~10,000字 — the published cap for 第19回 通常枠.
+    # Legacy section IDs (section_1_1 etc.) are preserved so downstream
+    # heuristics (mock_story, adoption_estimator, refinement_loop) continue
+    # to find their keys; new sections use hojo_* / keiei_* prefixes.
     "sections": [
+        # ─── ＜経営計画＞（様式2）──────────────────────────────
         _section("section_1_1", "1-1. 自社の概要", 900,
                  paths=["company.name", "company.business_description"]),
-        _section("section_1_2", "1-2. 売上・利益の状況", 1100,
+        _section("section_1_2", "1-2. 現在の売上・利益の状況", 1000,
                  paths=["financial.past_3y_pl"]),
-        _section("section_1_3", "1-3. 経営課題", 900, paths=["challenges"]),
-        _section("section_2_1", "2-1. 市場の動向", 1100, paths=["target_market"]),
-        _section("section_3", "3. 強み・弱み", 900, paths=["strengths"]),
-        _section("section_4_2", "4-2. 今後のプラン", 1800,
+        _section("section_1_3", "1-3. 経営課題", 800, paths=["challenges"]),
+        _section("section_2_1", "2-1. 市場の動向", 900, paths=["target_market"]),
+        _section("section_2_2", "2-2. 顧客ニーズ", 600, paths=["target_market"]),
+        _section("section_3", "3. 強み・弱み", 800, paths=["strengths"]),
+        _section("section_4_1", "4-1. 経営方針・目標", 600,
+                 paths=["planned_project.goal"]),
+        _section("section_4_2", "4-2. 今後のプラン", 1300,
                  paths=["planned_project.initiatives"]),
-        _section("section_effect", "補助事業の効果", 900,
+        # ─── ＜補助事業計画＞（様式2）──────────────────────────
+        _section("hojo_1", "1. 補助事業で行う事業名（30字以内）", 26,
+                 min_chars=15, max_chars=30),
+        _section("hojo_2_1", "2-1. 補助事業の概要", 400,
+                 paths=["planned_project.summary"]),
+        _section("hojo_2_2", "2-2. 補助事業の背景・目的", 500,
+                 paths=["planned_project.goal"]),
+        _section("hojo_2_3", "2-3. 具体的な取組内容", 1100,
+                 paths=["planned_project.initiatives"]),
+        _section("hojo_4_1", "4-1. 補助事業の効果", 800,
+                 paths=["planned_project.expected_outcomes"]),
+        _section("hojo_4_2", "4-2. 効果の試算", 600,
                  paths=["planned_project.expected_outcomes"]),
     ],
     "charts": _COMMON_CHARTS,

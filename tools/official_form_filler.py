@@ -314,6 +314,11 @@ def _next_sibling_tbl(p_element):
 def _write_body_into_cell(tc_element, body: str) -> None:
     """Replace the cell's content with ``body`` (preserving cell style).
 
+    Long narrative bodies use blank lines (``\n\n``) as paragraph
+    delimiters; each delimited block becomes its own ``<w:p>`` so the
+    reader sees real paragraph breaks instead of one wall of text.
+    Single ``\n`` within a paragraph becomes ``<w:br/>`` (soft line).
+
     Used for the row-1 input cell of a 2-row instruction/input table —
     that cell was empty, so we don't have to keep any prior text.
     """
@@ -323,24 +328,37 @@ def _write_body_into_cell(tc_element, body: str) -> None:
     for child in list(tc_element):
         if child.tag == qn("w:p"):
             tc_element.remove(child)
-    # Add one paragraph carrying the body.
-    new_p = _make_body_paragraph(body)
-    tc_element.append(new_p)
+    for paragraph_text in _split_into_paragraphs(body):
+        tc_element.append(_make_body_paragraph(paragraph_text))
 
 
-def _make_body_paragraph(body: str):
-    """Build a fresh ``<w:p>`` element containing ``body``. Plain Normal
-    style; no special run formatting — keeps the cell's own paragraph
-    style by default."""
+def _split_into_paragraphs(body: str) -> list[str]:
+    """Split body into paragraph-sized chunks at blank-line delimiters.
+
+    Output is non-empty stripped strings. Single newlines inside each
+    chunk are preserved (consumer turns them into ``<w:br/>`` runs).
+    """
+    blocks = re.split(r"\n\s*\n+", (body or "").strip())
+    return [b.strip() for b in blocks if b.strip()]
+
+
+def _make_body_paragraph(paragraph_text: str):
+    """Build a ``<w:p>`` for a single paragraph. ``\n`` inside the
+    paragraph becomes ``<w:br/>`` so each line continues to wrap inside
+    the same paragraph block instead of merging into one long run."""
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
 
     p = OxmlElement("w:p")
     r = OxmlElement("w:r")
-    t = OxmlElement("w:t")
-    t.set(qn("xml:space"), "preserve")
-    t.text = body
-    r.append(t)
+    lines = paragraph_text.split("\n")
+    for i, line in enumerate(lines):
+        if i > 0:
+            r.append(OxmlElement("w:br"))
+        t = OxmlElement("w:t")
+        t.set(qn("xml:space"), "preserve")
+        t.text = line
+        r.append(t)
     p.append(r)
     return p
 
