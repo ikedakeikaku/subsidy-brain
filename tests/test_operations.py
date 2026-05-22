@@ -55,12 +55,10 @@ def test_cost_tracker_aggregates_per_agent() -> None:
 
 
 def test_natural_pipeline_handles_three_distinct_subsidies(
-    monkeypatch, sample_company
+    tmp_path: Path, monkeypatch, sample_company
 ) -> None:
     """Same engine, three different subsidy names — all must produce a
-    valid .docx without any preset YAML or curated template."""
-    import shutil
-
+    valid .docx with **distinct** program_ids, even on the fallback path."""
     from agents.profile_synthesizer import ProfileSynthesizer
     from config import settings as settings_mod
     from demo.mock_story import MOCK_STORY
@@ -70,12 +68,14 @@ def test_natural_pipeline_handles_three_distinct_subsidies(
     monkeypatch.setattr(settings_mod.settings, "perplexity_api_key", "")
     monkeypatch.chdir(ROOT)
 
-    out_dir = ROOT / "demo" / "output"
-    shutil.rmtree(out_dir, ignore_errors=True)
-
-    for query in ["持続化補助金 第19回", "ものづくり補助金 第18次", "省力化投資補助金 第2回"]:
+    produced: dict[str, Path] = {}
+    for query in [
+        "持続化補助金 第19回",
+        "ものづくり補助金 第18次",
+        "省力化投資補助金 第2回",
+    ]:
         profile = asyncio.run(ProfileSynthesizer().synthesize(query))
-        out = out_dir / f"{profile.program_id}_test.docx"
+        out = tmp_path / f"{profile.program_id}_test.docx"
         assemble_document(
             profile=profile,
             company=sample_company,
@@ -86,6 +86,13 @@ def test_natural_pipeline_handles_three_distinct_subsidies(
         )
         assert out.exists(), query
         assert out.stat().st_size > 30_000, query
+        produced[query] = out
+
+    # Every subsidy must map to a distinct program_id — otherwise the
+    # demo would silently overwrite the previous run's output.
+    assert len({p.name for p in produced.values()}) == 3, (
+        f"distinct subsidy names should produce distinct program_ids; got {produced}"
+    )
 
 
 # ---------------------------------------------------------------------------

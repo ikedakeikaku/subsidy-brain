@@ -202,6 +202,10 @@ class ProfileSynthesizer:
 
     def _fallback_profile(self, subsidy_name: str) -> SubsidyProfile:
         payload = dict(_DEFAULT_FALLBACK_PROFILE)
+        # Derive a query-specific program_id so distinct subsidy names
+        # produce distinct profiles even on the fallback path. Without
+        # this every fallback call collides on "generic_subsidy".
+        payload["program_id"] = _slugify(subsidy_name)
         payload["canonical_name"] = f"{subsidy_name}（フォールバック構造）"
         return self._to_profile(payload, fallback_name=subsidy_name)
 
