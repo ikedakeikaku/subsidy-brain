@@ -140,6 +140,12 @@ def _to_subsidy_program(payload: dict[str, Any]) -> SubsidyProgram | None:
         except Exception as e:  # noqa: BLE001
             logger.debug("skip malformed form entry %s: %s", f, e)
 
+    # Coerce datetime strings to date-only strings ("2026-04-30T17:00:00+09:00"
+    # → "2026-04-30") since SubsidyProgram.application_deadline is a date.
+    raw_deadline = payload.get("application_deadline") or None
+    if isinstance(raw_deadline, str) and "T" in raw_deadline:
+        raw_deadline = raw_deadline.split("T", 1)[0]
+
     try:
         return SubsidyProgram(
             program_id=str(payload.get("program_id") or "unknown"),
@@ -149,7 +155,7 @@ def _to_subsidy_program(payload: dict[str, Any]) -> SubsidyProgram | None:
             issuing_body=str(payload.get("issuing_body") or ""),
             landing_url=payload.get("landing_url") or None,
             guideline_pdf_url=payload.get("guideline_pdf_url") or None,
-            application_deadline=payload.get("application_deadline") or None,
+            application_deadline=raw_deadline,
             max_award_yen=int(payload.get("max_award_yen") or 0),
             subsidy_rate=float(payload.get("subsidy_rate") or 0.0),
             forms=forms,

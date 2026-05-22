@@ -140,8 +140,11 @@ async def run(query: str, *, live: bool, use_cache: bool) -> None:
 
     # ----- 5. Build the story --------------------------------------------
     if live:
-        if not os.getenv("ANTHROPIC_API_KEY"):
-            raise SystemExit("--live requires ANTHROPIC_API_KEY")
+        from config.settings import settings
+        if not (settings.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")):
+            raise SystemExit(
+                "--live requires ANTHROPIC_API_KEY (in .env or environment)"
+            )
         # Use the discovered guideline text if we have it, else a short
         # research summary fetched via AdoptionResearcher.
         guideline_text = (
