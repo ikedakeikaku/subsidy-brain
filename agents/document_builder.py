@@ -101,25 +101,32 @@ class DocumentBuilder(BaseAgent):
     def _resolve_profile(self, input_data: DocumentBuildInput) -> SubsidyProfile:
         """Look up the profile via ``template_id``.
 
-        ``template_id`` can be either:
-          * a registered preset key (e.g. ``"jizoku_19"``)
+        ``template_id`` can be:
           * an absolute / relative path to a profile YAML
+          * a stem under ``presets/`` (e.g. ``"jizoku_19"`` →
+            ``presets/jizoku_19_profile.yaml``) for users who have committed
+            their own overrides
 
-        The default ``"application_form"`` falls back to the sample profile.
+        For the natural-language workflow, callers should not use this
+        agent at all — they should pass the synthesised SubsidyProfile
+        directly to ``tools.document_assembler.assemble_document`` or
+        ``tools.official_form_filler.fill_official_form``.
         """
         candidates: list[Path] = []
-        tid = input_data.template_id or "application_form"
-        candidates.append(Path("presets") / f"{tid}_profile.yaml")
-        candidates.append(Path("presets") / f"{tid}.yaml")
-        candidates.append(Path(tid))
-        candidates.append(Path("demo") / "sample_profile.yaml")
+        tid = input_data.template_id or ""
+        if tid:
+            candidates.append(Path("presets") / f"{tid}_profile.yaml")
+            candidates.append(Path("presets") / f"{tid}.yaml")
+            candidates.append(Path(tid))
 
         for c in candidates:
             if c.exists() and c.suffix in {".yaml", ".yml"}:
                 return load_profile(c)
         raise FileNotFoundError(
             f"No SubsidyProfile found for template_id={tid!r}. "
-            "Provide a presets/<id>_profile.yaml or pass the full path."
+            "Either commit presets/<id>_profile.yaml or use the "
+            "natural-language pipeline (run_natural_demo.py) which "
+            "synthesises the profile via ProfileSynthesizer."
         )
 
     def _resolve_out_path(

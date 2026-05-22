@@ -108,7 +108,7 @@ def test_template_synthesizer_generates_from_profile(tmp_path: Path) -> None:
     )
     assert template.exists()
     assert template.stat().st_size > 5_000
-    assert source == "synthesised"
+    assert source == "draft"
 
     # Every section in the profile should have a corresponding placeholder
     from docx import Document

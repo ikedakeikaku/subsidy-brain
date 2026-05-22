@@ -54,42 +54,38 @@ def test_cost_tracker_aggregates_per_agent() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_document_builder_works_for_three_subsidies() -> None:
-    import yaml
+def test_natural_pipeline_handles_three_distinct_subsidies(
+    monkeypatch, sample_company
+) -> None:
+    """Same engine, three different subsidy names — all must produce a
+    valid .docx without any preset YAML or curated template."""
+    import shutil
 
-    from agents.document_builder import DocumentBuilder
+    from agents.profile_synthesizer import ProfileSynthesizer
+    from config import settings as settings_mod
     from demo.mock_story import MOCK_STORY
-    from schemas.document_build import DocumentBuildInput
+    from tools.document_assembler import assemble_document
 
-    company = yaml.safe_load(
-        (ROOT / "demo" / "sample_company.yaml").read_text(encoding="utf-8")
-    )
+    monkeypatch.setattr(settings_mod.settings, "anthropic_api_key", "")
+    monkeypatch.setattr(settings_mod.settings, "perplexity_api_key", "")
+    monkeypatch.chdir(ROOT)
 
-    expected_section_counts = {
-        "jizoku_19": 11,
-        "monozukuri_v18": 10,
-        "shoryokuka_v2": 8,
-    }
+    out_dir = ROOT / "demo" / "output"
+    shutil.rmtree(out_dir, ignore_errors=True)
 
-    for preset_id, expected_n in expected_section_counts.items():
-        inp = DocumentBuildInput(
+    for query in ["持続化補助金 第19回", "ものづくり補助金 第18次", "省力化投資補助金 第2回"]:
+        profile = asyncio.run(ProfileSynthesizer().synthesize(query))
+        out = out_dir / f"{profile.program_id}_test.docx"
+        assemble_document(
+            profile=profile,
+            company=sample_company,
             story=MOCK_STORY,
-            expenses=company.get("expenses", {}),
-            financial_data=company.get("financial", {}),
-            hearing_data=company,
-            template_id=preset_id,
-            applicant_id="SAMPLE",
+            out_path=out,
+            extra_metadata={},
+            quality_block=None,
         )
-        result = asyncio.run(DocumentBuilder().execute(inp))
-        assert len(result.documents) >= 1, preset_id
-        out = Path(result.documents[0].file_path)
-        assert out.exists(), preset_id
-        assert out.stat().st_size > 30_000, preset_id
-        # The profile drives section count, so it differs per subsidy
-        assert result.metadata.total_pages == expected_n, (
-            f"{preset_id}: expected {expected_n} sections, "
-            f"got {result.metadata.total_pages}"
-        )
+        assert out.exists(), query
+        assert out.stat().st_size > 30_000, query
 
 
 # ---------------------------------------------------------------------------

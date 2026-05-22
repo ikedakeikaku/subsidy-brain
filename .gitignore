@@ -26,15 +26,12 @@ Thumbs.db
 # Demo output
 demo/output/
 
-# Generated templates (regenerated on demo / CI to keep git diffs text-only).
-# Hand-curated official subsidy templates can be committed by removing the
-# matching pattern below or by placing them under a different directory.
-templates/sample_*/
-templates/*/_synthesized.docx
-templates/持続化*/
-templates/事業再構築*/
-templates/ものづくり*/
-templates/省力化*/
+# Every directory under templates/ is treated as runtime output:
+# either the GuidelineFetcher cache of a downloaded official 様式 docx
+# or a draft skeleton synthesised by TemplateSynthesizer.
+# Hand-curated official templates that the user explicitly wants to
+# commit can be force-added with ``git add -f templates/<dir>``.
+templates/*/
 
 # Guideline fetcher cache
 .cache/

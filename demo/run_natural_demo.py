@@ -54,7 +54,7 @@ from agents.profile_synthesizer import ProfileSynthesizer  # noqa: E402
 from agents.subsidy_discoverer import discover_subsidy  # noqa: E402
 from agents.template_synthesizer import TemplateSynthesizer  # noqa: E402
 from demo.mock_story import MOCK_STORY  # noqa: E402
-from demo.run_demo import build_story_live  # noqa: E402
+from demo.story_builder_live import build_story_live  # noqa: E402
 from schemas.skill import ExecutionLog  # noqa: E402
 from schemas.subsidy_registry import (  # noqa: E402
     SubsidyProgram,
@@ -141,9 +141,12 @@ async def run(query: str, *, live: bool, use_cache: bool) -> None:
     if live:
         if not os.getenv("ANTHROPIC_API_KEY"):
             raise SystemExit("--live requires ANTHROPIC_API_KEY")
+        # Use the discovered guideline text if we have it, else a short
+        # research summary fetched via AdoptionResearcher.
         guideline_text = (
-            ROOT / "demo" / "sample_guideline.md"
-        ).read_text(encoding="utf-8")
+            research.get("findings", "")
+            or f"対象補助金: {program.canonical_name}（最新の公募要領を参照してください）"
+        )
         logger.info("story: calling Claude (live)")
         live_story = await build_story_live(company, guideline_text)
         story = {
@@ -177,16 +180,10 @@ async def run(query: str, *, live: bool, use_cache: bool) -> None:
     final_estimate = estimate_adoption_probability(profile, company, story)
 
     # ----- 7. Pick / synthesise the template -----------------------------
-    # Build the official-style sample template if needed
-    sample = ROOT / "templates" / "official_style_sample" / "様式2_経営計画書.docx"
-    if not sample.exists():
-        try:
-            from templates.build_official_style_template import (
-                build_official_style_form,
-            )
-            build_official_style_form()
-        except Exception as e:  # noqa: BLE001
-            logger.warning("could not build official-style sample: %s", e)
+    # The official 様式 docx is used if GuidelineFetcher actually downloaded
+    # it from the publishing body. Otherwise we either use a hand-curated
+    # template the user committed under templates/<program_id>/ or
+    # synthesise a clearly-labelled DRAFT skeleton from the profile.
     template_path, template_source = TemplateSynthesizer().get_template(
         profile,
         fetched_form_paths=fetch_manifest.get("form_paths", {}),
@@ -197,9 +194,10 @@ async def run(query: str, *, live: bool, use_cache: bool) -> None:
     # ----- 8. Assemble the final docx ------------------------------------
     out_path = ROOT / "demo" / "output" / f"{program.program_id}_application.docx"
 
-    # When we have a real (or realistic-shaped) docx, fill it preserving
-    # all formatting. Otherwise build the document from the profile.
-    if template_source in {"official", "local", "official_style_sample"}:
+    # When the template is a real official 様式 (or a user-committed local
+    # one), fill it preserving all formatting via OfficialFormFiller.
+    # Otherwise build the document from the profile via document_assembler.
+    if template_source in {"official", "local"}:
         from tools.official_form_filler import fill_official_form
         fill_report = fill_official_form(
             template_path=template_path,

@@ -46,8 +46,9 @@ class TemplateSynthesizer:
 
           * ``"official"`` — file came from GuidelineFetcher / official URL
           * ``"local"`` — file was committed under ``templates/<program_id>/``
-          * ``"official_style_sample"`` — bundled mock-real form (demo only)
-          * ``"synthesised"`` — generated from the profile on the fly
+          * ``"draft"`` — a clearly-labelled DRAFT skeleton synthesised from
+            the profile. Carries a warning header so it can't be mistaken
+            for the publishing body's actual form.
         """
         # 1. Use the official 様式 if it actually downloaded
         if fetched_form_paths:
@@ -71,16 +72,11 @@ class TemplateSynthesizer:
                 if not cand.name.startswith("_"):
                     return cand, "local"
 
-        # 3. Use the bundled "official-style" sample if present (demo only)
-        bundled = (
-            Path(templates_root) / "official_style_sample" / "様式2_経営計画書.docx"
-        )
-        if bundled.exists():
-            return bundled, "official_style_sample"
-
-        # 4. Synthesise a template from the profile
-        out = Path(templates_root) / profile.program_id / "_synthesized.docx"
-        return self._synthesise(profile, out), "synthesised"
+        # 3. Synthesise a DRAFT skeleton from the profile. Never claim it
+        #    is the official 様式 — the synthesised file carries a warning
+        #    header so reviewers immediately spot a non-official document.
+        out = Path(templates_root) / profile.program_id / "_draft_skeleton.docx"
+        return self._synthesise(profile, out), "draft"
 
     # ------------------------------------------------------------------
 
@@ -99,14 +95,24 @@ class TemplateSynthesizer:
         section.top_margin = Cm(2.5)
         section.bottom_margin = Cm(2.5)
 
-        title = doc.add_heading(f"{profile.canonical_name} 申請書", level=0)
-        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-
-        meta = doc.add_paragraph()
-        meta.add_run(
-            "※ 本テンプレートは subsidy-brain による自動生成です。"
-            "実申請には公式 様式 への移植を行ってください。"
+        # Warning header — never let this skeleton be confused for the
+        # publishing body's official 様式.
+        warn = doc.add_paragraph()
+        warn_run = warn.add_run(
+            "【DRAFT — 本ファイルは公式 様式 ではありません】"
         )
+        warn_run.bold = True
+        doc.add_paragraph(
+            "subsidy-brain が公募要領を読み取って合成した草稿スケルトンです。"
+            "実申請時は publishing body（中小企業庁・全国商工会連合会 等）が"
+            "配布する公式 様式 docx を取得し、本文だけを移植してください。"
+            "本ファイルの罫線・ヘッダ・ページ設定は公式 様式 とは一致しません。"
+        )
+
+        title = doc.add_heading(
+            f"{profile.canonical_name} 申請書（DRAFT SKELETON）", level=0
+        )
+        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
         # Applicant header
         doc.add_heading("申請者情報", level=1)

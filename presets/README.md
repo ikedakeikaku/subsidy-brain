@@ -1,48 +1,49 @@
-# Subsidy presets (optional)
+# presets/ (optional override layer)
 
-**These files are no longer required**. The agent system synthesises a
-SubsidyProfile on the fly from a natural-language subsidy name via
-`agents/profile_synthesizer.py`, exactly as a human consultant would
-research a new programme they've never seen before.
+This directory is **deliberately empty** in the shipped repo.
 
-The main entry point demonstrates this:
+The agent system is designed to research each subsidy from scratch, the
+way a human consultant would. The natural-language entry point
+``demo/run_natural_demo.py`` invokes:
 
-```bash
-uv run python demo/run_natural_demo.py "持続化補助金 第19回"
-uv run python demo/run_natural_demo.py --live "ものづくり補助金 第18次"
-uv run python demo/run_natural_demo.py --no-cache "省力化投資補助金 第2回"
-```
+  1. ``SubsidyDiscoverer`` to find the publishing body's actual URLs via
+     Anthropic / Perplexity web search.
+  2. ``ProfileSynthesizer`` to read the guideline and decide section
+     structure, character limits, charts, tables, and 加点項目.
+  3. ``GuidelineFetcher`` to download the official 様式 docx / xlsx files.
+  4. ``profile_cache`` to remember the synthesised profile so subsequent
+     runs are instant.
 
-Internally:
+Nothing in here is required for that flow.
 
-  1. `SubsidyDiscoverer` finds the publishing body's official URLs.
-  2. `ProfileSynthesizer` decides the section structure / character limits
-     / required charts and tables by reading the guideline.
-  3. `profile_cache` (`.cache/profiles/<id>.json`) stores the result so
-     subsequent runs are instant.
+## When to put a file here
 
-## What these YAML files are for
+Two narrow cases. Both are user-curated overrides, not factory defaults:
 
-The files in this directory remain available as:
+**Hand-tuned profile.** If the synthesised profile for some subsidy is
+not what you want — perhaps the publishing body's guideline left section
+character limits ambiguous and the agent chose poorly — drop a YAML
+named ``<program_id>_profile.yaml`` here. The pipeline will load it in
+preference to running the synthesiser again.
 
-  * **Offline-CI fixtures** — when no `ANTHROPIC_API_KEY` or
-    `PERPLEXITY_API_KEY` is configured, the synthesiser falls back to a
-    generic default profile. The named presets here are richer than that
-    fallback and let tests verify multi-subsidy behaviour without making
-    network calls.
-  * **Schema examples** — a new user reading the code can look at
-    `jizoku_19_profile.yaml` to understand what the synthesiser emits.
-  * **Override surface** — if you disagree with the synthesised profile
-    for a given subsidy, save your own under
-    `presets/<id>_profile.yaml`. The runtime will load this in
-    preference to re-synthesising.
+**Hand-curated registry entry.** If you want to point the pipeline at
+exact known URLs (e.g. a particular published 公募要領 PDF and its
+様式 docx files) without going through web search every time, drop
+``<program_id>.yaml`` here. ``YamlSubsidyRegistry`` will read it.
 
-| File | Subsidy | Issuing body |
-|---|---|---|
-| `jizoku_19.yaml` / `jizoku_19_profile.yaml` | 小規模事業者持続化補助金 第19回 | 全国商工会連合会 / 日本商工会議所 |
-| `monozukuri_v18.yaml` / `monozukuri_v18_profile.yaml` | ものづくり・商業・サービス補助金 第18次 | 全国中小企業団体中央会 |
-| `shoryokuka_v2.yaml` / `shoryokuka_v2_profile.yaml` | 中小企業省力化投資補助金 第2回 | 中小企業基盤整備機構 |
+Both are entirely optional. The shipped CI / demo runs without either.
 
-The deadlines, URLs, and award amounts in these files are placeholders.
-For real submission, override them with verified values from the publishing
-body's website.
+## Why this directory used to contain example YAMLs
+
+Earlier iterations of this project committed hand-written stubs for
+持続化補助金 第19回, ものづくり補助金 第18次, and 省力化投資補助金 第2回.
+Those stubs **were guesses** — the URLs were placeholders, the character
+limits were estimates, the form lists weren't verified against the
+publishing body. They were misleading: a reader could believe the system
+had factual knowledge about each subsidy when in fact it had a static
+file someone wrote by hand.
+
+The honest design is: **don't ship guesses**. Synthesise on demand from
+research, and use a profile cache for repeat runs. If a user wants to
+lock in a specific structure, they commit it here themselves with full
+awareness that it's an override.
