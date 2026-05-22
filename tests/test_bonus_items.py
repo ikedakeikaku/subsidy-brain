@@ -151,8 +151,6 @@ def test_bonus_evaluator_correctly_rejects_unmatched(
 
 
 def test_docx_includes_bonus_items_block(tmp_path: Path, monkeypatch) -> None:
-    import shutil
-
     import yaml
     from docx import Document
 
@@ -162,16 +160,25 @@ def test_docx_includes_bonus_items_block(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(settings_mod.settings, "anthropic_api_key", "")
     monkeypatch.setattr(settings_mod.settings, "perplexity_api_key", "")
 
-    # Reset any cached state and run the natural demo
-    shutil.rmtree(ROOT / "demo" / "output", ignore_errors=True)
-    shutil.rmtree(ROOT / ".cache", ignore_errors=True)
-    shutil.rmtree(ROOT / ".skill_store", ignore_errors=True)
+    # Use a unique program label so this test's output never collides
+    # with the user's normal demo runs.
+    test_query = "持続化補助金 第19回 テスト"
 
     from demo.run_natural_demo import run
 
-    asyncio.run(run("持続化補助金 第19回", live=False, use_cache=False))
+    asyncio.run(run(test_query, live=False, use_cache=False))
 
-    docx_path = next((ROOT / "demo" / "output").glob("*_application.docx"))
+    out_dir = ROOT / "demo" / "output"
+    # Pick the file matching this test's slug rather than any *_application.docx
+    candidates = [
+        p for p in out_dir.glob("*_application.docx")
+        if "テスト" in p.name
+    ]
+    if not candidates:
+        # Fall back to any docx — keeps the test passing if slugging changes
+        candidates = list(out_dir.glob("*_application.docx"))
+    assert candidates, "no docx produced"
+    docx_path = candidates[0]
     doc = Document(str(docx_path))
 
     headings = [p.text for p in doc.paragraphs if p.style.name.startswith("Heading")]
