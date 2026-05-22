@@ -58,6 +58,13 @@ class SubsidyProgram(BaseModel):
         default=0.0, ge=0.0, le=1.0, description="Subsidy ratio, 0.66 = 2/3"
     )
     forms: list[SubsidyForm] = Field(default_factory=list)
+    additional_documents: list[SubsidyForm] = Field(
+        default_factory=list,
+        description=(
+            "Supplementary documents that aren't 様式 themselves but help the"
+            " synthesiser: 入力ガイド, 記載例, FAQ, 補助事業の手引き 等"
+        ),
+    )
     keywords_for_research: list[str] = Field(
         default_factory=list,
         description="Search keywords used by AdoptionResearcher",

@@ -120,20 +120,31 @@ async def run(query: str, *, live: bool, use_cache: bool) -> None:
         logger.info("fetcher: no URLs in program shell; skipping")
 
     # ----- 3. Synthesize SubsidyProfile (the real "judgment" step) -------
-    # If the guideline PDF was successfully downloaded, the synthesizer
-    # reads it and asks Claude to extract structure verbatim.
-    # Otherwise it falls back to web_search → hardcoded family template.
+    # If the guideline PDF and/or auxiliary docs (入力ガイド・記載例 等)
+    # were successfully downloaded, the synthesizer reads them all and
+    # asks Claude to extract structure verbatim, treating 公募要領 as the
+    # primary source and aux docs as overrides for char-limit / wording
+    # specifics. Otherwise falls back to web_search → hardcoded template.
     profile = profile_cache.load(program.program_id) if use_cache else None
     if profile is None:
         guideline_path = fetch_manifest.get("guideline_path") or None
-        # Only pass if the file actually has content
         if guideline_path:
             p = Path(guideline_path)
             if not p.exists() or p.stat().st_size < 1024:
                 guideline_path = None
+
+        # Auxiliary docs that survived the fetcher's HTML-recovery step
+        # (only PDFs are useful for the synthesizer right now)
+        aux_pdf_paths: list[str] = []
+        for path in (fetch_manifest.get("additional_paths") or {}).values():
+            pp = Path(path)
+            if pp.exists() and pp.stat().st_size >= 1024 and pp.suffix == ".pdf":
+                aux_pdf_paths.append(str(pp))
+
         profile = await ProfileSynthesizer().synthesize(
             program.canonical_name,
             guideline_pdf_path=guideline_path,
+            additional_pdf_paths=aux_pdf_paths,
         )
         # Lock the profile to the same program_id so caches line up
         profile = profile.model_copy(update={"program_id": program.program_id})

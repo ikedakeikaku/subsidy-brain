@@ -38,7 +38,24 @@ _DISCOVERY_SYSTEM = """\
 - 二次情報サイト・代行業者サイトは引用しない
 - 情報が確認できない項目は空文字 "" を返す
 - 全てのURLは https://〜 で始まる完全な形で記載する
-- 様式 (form) は判明している限り全て列挙
+
+【URLの厳密ルール（重要）】
+- forms[*].url および guideline_pdf_url は、**ファイル本体に直接アクセスできるURL**
+  でなければならない（ブラウザで開いた時にダウンロードが始まる URL）。
+  良い例: https://example.go.jp/path/様式2.docx
+         https://example.go.jp/files/r6_19/19_kobo.pdf
+  悪い例: https://example.go.jp/about.html       ← ランディングページ
+         https://example.go.jp/download/         ← ダウンロード案内ページ
+         https://example.go.jp/oubo.php          ← 動的ページ
+- ファイルの直リンクが見つからない場合は url に空文字 "" を返す（推測したURLは絶対に返さない）
+- ext は実際に DL されるファイルの拡張子（docx / xlsx / pdf）を正確に
+- 同じ URL を複数 forms に使い回さない（各 form は固有の様式ファイル）
+
+【入力ガイド / 記載例 / FAQ 等の補足ドキュメント】
+- 入力ガイド・記載例・FAQ・補助事業の手引き なども見つけた場合は
+  ``additional_documents`` 配列に追加してください
+  形式: {"doc_id": "input_guide" | "writing_example" | "faq" | "tebiki",
+         "name": "入力ガイド", "url": "...", "ext": "pdf|docx"}
 
 期待するJSONスキーマ:
 {
@@ -53,6 +70,10 @@ _DISCOVERY_SYSTEM = """\
   "subsidy_rate":        float,
   "forms": [
     {"form_id": "様式1", "name": "申請書", "url": "...", "ext": "docx|xlsx|pdf"},
+    ...
+  ],
+  "additional_documents": [
+    {"doc_id": "input_guide", "name": "入力ガイド", "url": "...", "ext": "pdf"},
     ...
   ],
   "keywords_for_research": [str, str, ...]
@@ -116,29 +137,43 @@ def _extract_json(text: str) -> dict[str, Any] | None:
 
 
 def _to_subsidy_program(payload: dict[str, Any]) -> SubsidyProgram | None:
-    forms_raw = payload.get("forms") or []
-    forms: list[SubsidyForm] = []
-    for f in forms_raw:
+    program_id = str(payload.get("program_id") or "unknown")
+
+    def _to_form(f: dict, *, kind: str) -> SubsidyForm | None:
         if not isinstance(f, dict):
-            continue
+            return None
         url = f.get("url") or None
         ext = (f.get("ext") or "").lower().strip(".") or "docx"
-        form_id = str(f.get("form_id") or f.get("id") or "").strip()
+        ident = str(
+            f.get("form_id") or f.get("doc_id") or f.get("id") or ""
+        ).strip()
         name = str(f.get("name") or "").strip()
-        if not form_id:
-            continue
-        local_path = f"templates/{payload.get('program_id', 'unknown')}/{form_id}.{ext}"
+        if not ident:
+            return None
+        subfolder = "forms" if kind == "form" else "docs"
+        local_path = f"templates/{program_id}/{subfolder}/{ident}.{ext}"
         try:
-            forms.append(
-                SubsidyForm(
-                    form_id=form_id,
-                    name=name or form_id,
-                    url=url,
-                    local_path=local_path,
-                )
+            return SubsidyForm(
+                form_id=ident,
+                name=name or ident,
+                url=url,
+                local_path=local_path,
             )
         except Exception as e:  # noqa: BLE001
-            logger.debug("skip malformed form entry %s: %s", f, e)
+            logger.debug("skip malformed entry %s: %s", f, e)
+            return None
+
+    forms: list[SubsidyForm] = []
+    for f in payload.get("forms") or []:
+        item = _to_form(f, kind="form")
+        if item:
+            forms.append(item)
+
+    additional: list[SubsidyForm] = []
+    for f in payload.get("additional_documents") or []:
+        item = _to_form(f, kind="additional")
+        if item:
+            additional.append(item)
 
     # Coerce datetime strings to date-only strings ("2026-04-30T17:00:00+09:00"
     # → "2026-04-30") since SubsidyProgram.application_deadline is a date.
@@ -159,6 +194,7 @@ def _to_subsidy_program(payload: dict[str, Any]) -> SubsidyProgram | None:
             max_award_yen=int(payload.get("max_award_yen") or 0),
             subsidy_rate=float(payload.get("subsidy_rate") or 0.0),
             forms=forms,
+            additional_documents=additional,
             keywords_for_research=list(payload.get("keywords_for_research") or []),
         )
     except Exception as e:  # noqa: BLE001

@@ -385,22 +385,27 @@ class ProfileSynthesizer:
         subsidy_name: str,
         *,
         guideline_pdf_path: str | None = None,
+        additional_pdf_paths: list[str] | None = None,
         extra_context: str = "",
     ) -> SubsidyProfile:
         """Return a SubsidyProfile for ``subsidy_name``.
 
         Lookup precedence:
-          1. If ``guideline_pdf_path`` is set and the file exists and is a
-             real PDF, read it with pdfplumber and ask Claude to extract
-             the section structure. This is the strongest source — the
-             output reflects what the publishing body actually wrote.
+          1. If ``guideline_pdf_path`` (+ optional additional docs like 入力
+             ガイド・記載例・FAQ) are set and at least one is a real PDF,
+             read them all with pdfplumber and ask Claude to extract the
+             section structure. **Strongest source** — the output reflects
+             what the publishing body actually wrote, plus any auxiliary
+             guidance the publisher distributes alongside.
           2. Otherwise web_search (Anthropic preferred, Perplexity fallback).
           3. Otherwise the hardcoded ``_pick_fallback_family`` template.
         """
-        # Path 1: read the actual guideline PDF
+        # Path 1: read the actual guideline PDF + auxiliary docs
         if guideline_pdf_path and settings.anthropic_api_key:
             profile = await self._synthesize_from_pdf(
-                guideline_pdf_path, subsidy_name
+                guideline_pdf_path,
+                subsidy_name,
+                additional_pdf_paths=additional_pdf_paths or [],
             )
             if profile is not None:
                 return profile
@@ -441,48 +446,71 @@ class ProfileSynthesizer:
             body += f"\n\n## 追加コンテキスト\n{extra_context}"
         return body
 
-    async def _synthesize_from_pdf(
-        self, pdf_path: str, subsidy_name: str
-    ) -> SubsidyProfile | None:
-        """Read the official guideline PDF and ask Claude to extract the
-        section structure verbatim. Returns ``None`` on any failure so
-        the caller can fall through to web_search / fallback.
-        """
+    @staticmethod
+    def _read_pdf(path: str | None) -> str:
+        """Extract concatenated page text from a PDF. Returns '' on any
+        failure (missing file, encrypted PDF, etc.)."""
         from pathlib import Path as _P
 
-        p = _P(pdf_path)
+        if not path:
+            return ""
+        p = _P(path)
         if not p.exists() or p.stat().st_size < 1024:
-            return None
-
+            return ""
         try:
             import pdfplumber
         except ImportError:
-            logger.warning("pdfplumber not available; skipping PDF synthesis")
-            return None
-
+            logger.warning("pdfplumber not available; skipping PDF read")
+            return ""
         try:
             with pdfplumber.open(str(p)) as pdf:
-                # Concatenate page text. Real 公募要領 PDFs are ~30–60 pages;
-                # we cap at ~50k chars to fit Claude's input budget while
-                # still covering structure, scoring, and 加点項目 sections.
-                pages_text: list[str] = []
+                pages: list[str] = []
                 for page in pdf.pages:
                     txt = page.extract_text() or ""
                     if txt.strip():
-                        pages_text.append(txt)
-                full_text = "\n\n".join(pages_text)
+                        pages.append(txt)
+                return "\n\n".join(pages)
         except Exception as e:  # noqa: BLE001
-            logger.warning("ProfileSynthesizer: PDF read failed: %s", e)
+            logger.warning("ProfileSynthesizer: PDF read failed for %s: %s", p, e)
+            return ""
+
+    async def _synthesize_from_pdf(
+        self,
+        pdf_path: str,
+        subsidy_name: str,
+        *,
+        additional_pdf_paths: list[str] | None = None,
+    ) -> SubsidyProfile | None:
+        """Read the official guideline PDF (and any auxiliary docs like 入力
+        ガイド / 記載例) and ask Claude to extract the section structure.
+        Returns ``None`` on any failure so the caller can fall through to
+        web_search / fallback.
+        """
+        primary_text = self._read_pdf(pdf_path)
+        if not primary_text:
             return None
 
-        if not full_text.strip():
-            return None
+        from pathlib import Path as _P
 
-        # Cap input size — Claude's context is large but we don't need
-        # post-30-page boilerplate (経費精算手続き等)
-        max_chars = 60_000
-        if len(full_text) > max_chars:
-            full_text = full_text[:max_chars] + "\n\n[以降の文章は省略]"
+        # Read any auxiliary documents and concatenate them with clear
+        # delimiters so the LLM can attribute information to its source.
+        sections: list[tuple[str, str]] = [("公募要領", primary_text)]
+        for aux_path in additional_pdf_paths or []:
+            aux_text = self._read_pdf(aux_path)
+            if not aux_text:
+                continue
+            label = _P(aux_path).stem
+            sections.append((label, aux_text))
+
+        # Build a single budget-aware document; each source gets its own
+        # header so the LLM can disambiguate.
+        per_source_cap = 40_000 if len(sections) > 1 else 60_000
+        chunks: list[str] = []
+        for label, text in sections:
+            if len(text) > per_source_cap:
+                text = text[:per_source_cap] + "\n[以降の文章は省略]"
+            chunks.append(f"## 【{label}】\n\n{text}")
+        full_text = "\n\n---\n\n".join(chunks)
 
         from tools.claude_client import call_claude_json
 
@@ -502,10 +530,13 @@ class ProfileSynthesizer:
 
         user_message = (
             f"対象補助金: {subsidy_name}\n\n"
-            "## 公募要領テキスト（公式 PDF より抽出）\n\n"
+            "以下は公式に配布されている資料群のテキストです。複数ある場合は"
+            "「公募要領」を一次資料、「入力ガイド」「記載例」「FAQ」等を補助"
+            "資料として参照し、両者を統合してセクション構造を抽出してください。\n\n"
             f"{full_text}\n\n"
-            "上記の公募要領を読み取り、申請書のセクション構造を JSON で返してください。"
+            "上記の資料群を読み取り、申請書のセクション構造を JSON で返してください。"
             "セクション名は公募要領にある名称をそのまま使ってください。"
+            "入力ガイドに目標文字数や記載要件が書かれていればそれを優先反映してください。"
         )
 
         try:
