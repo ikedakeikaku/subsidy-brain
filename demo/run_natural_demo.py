@@ -246,6 +246,22 @@ async def run(query: str, *, live: bool, use_cache: bool) -> None:
         fetched_form_paths=fetch_manifest.get("form_paths", {}),
         templates_root="templates",
     )
+
+    # Classify the source docx more carefully: a "fillable 様式" (has empty
+    # input regions / table cells we should populate) vs a "reference
+    # checklist" (参考様式 / 記載項目 — describes WHICH fields exist in
+    # the electronic application but isn't itself a submittable form).
+    # We must NOT route the latter through OfficialFormFiller — its job is
+    # purely structural, and any inserted text shows up between instruction
+    # lines instead of in input regions.
+    if template_source in {"official", "local"}:
+        if _is_reference_checklist(template_path):
+            logger.info(
+                "template: %s reclassified as reference checklist (structure only); "
+                "switching to document_assembler for the final docx",
+                template_path,
+            )
+            template_source = "draft"
     logger.info("template: %s (source=%s)", template_path, template_source)
 
     # ----- 8. Assemble the final docx ------------------------------------
@@ -373,6 +389,44 @@ async def run(query: str, *, live: bool, use_cache: bool) -> None:
 def _slug(name: str) -> str:
     import re
     return re.sub(r"\W+", "_", name.lower()).strip("_") or "subsidy"
+
+
+def _is_reference_checklist(docx_path: str | Path) -> bool:
+    """Heuristic: detect docx that's a *list of fields* rather than a
+    submittable form.
+
+    Reference checklists are common for electronic-application subsidies
+    (持続化補助金, ものづくり補助金 等) — the publisher gives you a docx
+    summarising what fields the electronic system will ask for, but
+    you're not supposed to fill it in and submit it. OfficialFormFiller's
+    insertion logic puts content between instruction lines, which looks
+    nonsensical in an actual filed-as-pdf workflow.
+
+    Signals (any one is enough):
+      * Filename contains 参考様式 / 記載項目 / checklist
+      * First non-empty paragraph mentions "記載項目" or "本様式では申請できません"
+      * Document explicitly says "電子申請" in the first 30 paragraphs
+    """
+    p = Path(docx_path)
+    name = p.name
+    if any(kw in name for kw in ("参考様式", "記載項目", "checklist")):
+        return True
+    try:
+        from docx import Document
+
+        doc = Document(str(p))
+        head = "\n".join(
+            para.text for para in doc.paragraphs[:30] if para.text.strip()
+        )
+    except Exception:  # noqa: BLE001
+        return False
+    if "記載項目" in head:
+        return True
+    if "本様式では申請できません" in head:
+        return True
+    if "電子申請システム" in head and "ご準備" in head:
+        return True
+    return False
 
 
 def _find_template_dirs(program_id: str, canonical_name: str) -> list[Path]:
