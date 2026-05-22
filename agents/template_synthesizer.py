@@ -42,6 +42,47 @@ def _is_valid_docx(path: Path) -> bool:
         return False
 
 
+def _slug(name: str) -> str:
+    import re
+    return re.sub(r"\W+", "_", name.lower()).strip("_") or "subsidy"
+
+
+def _candidate_local_dirs(
+    templates_root: Path, program_id: str, canonical_name: str
+) -> list[Path]:
+    """Return subdirs of ``templates_root`` that plausibly belong to this
+    subsidy, in priority order.
+
+    Match strategy:
+      1. Exact slug match (case- and separator-insensitive)
+      2. Token overlap: subdir shares any normalised token ≥3 chars with
+         the program_id or canonical_name (catches "monodukuri-23" vs
+         "monodukuri_23" vs "monozukuri_v23").
+    """
+    if not templates_root.exists():
+        return []
+
+    pid_norm = _slug(program_id)
+    keywords = {
+        t for t in (_slug(program_id) + "_" + _slug(canonical_name)).split("_")
+        if len(t) >= 3
+    }
+
+    hits: list[Path] = []
+    for d in sorted(templates_root.iterdir()):
+        if not d.is_dir() or d.name.startswith("."):
+            continue
+        if _slug(d.name) == pid_norm:
+            hits.append(d)
+    for d in sorted(templates_root.iterdir()):
+        if not d.is_dir() or d.name.startswith(".") or d in hits:
+            continue
+        tokens = {t for t in _slug(d.name).split("_") if len(t) >= 3}
+        if tokens & keywords:
+            hits.append(d)
+    return hits
+
+
 class TemplateSynthesizer:
     """Materialise a .docx template for a given profile."""
 
@@ -94,12 +135,20 @@ class TemplateSynthesizer:
 
         # 2. Look in templates/<program_id>/ — only user-committed official
         #    forms live here. Runtime synthesised drafts never write here.
-        root = Path(templates_root) / profile.program_id
-        if root.exists():
-            for cand in root.glob("様式*.docx"):
-                return cand, "local"
-            for cand in root.glob("*.docx"):
-                if not cand.name.startswith("_"):
+        # The discoverer is non-deterministic about separator style
+        # ("monodukuri-23" / "monodukuri_23" can both surface for the same
+        # subsidy), so we accept any subdir whose normalised tokens
+        # intersect with the program_id's.
+        for cand_dir in _candidate_local_dirs(
+            Path(templates_root), profile.program_id, profile.canonical_name
+        ):
+            for cand in sorted(cand_dir.glob("様式*.docx")):
+                if _is_valid_docx(cand):
+                    return cand, "local"
+            for cand in sorted(cand_dir.glob("*.docx")):
+                if cand.name.startswith("_"):
+                    continue
+                if _is_valid_docx(cand):
                     return cand, "local"
 
         # 3. Synthesise a DRAFT skeleton under .cache/drafts/<program_id>/

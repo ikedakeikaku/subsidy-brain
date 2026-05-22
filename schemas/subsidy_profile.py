@@ -56,6 +56,14 @@ class SectionSpec(BaseModel):
         default=0,
         description="箇条書きの推奨数（0なら段落形式）",
     )
+    kind: str = Field(
+        default="section",
+        description=(
+            "見出しの種別。'leaf' = 文字数制限が明示された記入対象、"
+            "'container' = 配下に leaf を持つ見出し（本文は不要）、"
+            "'section' = 旧来のトップレベル節（document_assembler のデフォルト）"
+        ),
+    )
 
 
 class ChartSpec(BaseModel):

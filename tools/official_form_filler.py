@@ -90,10 +90,14 @@ def fill_official_form(
     sections_filled: list[str] = []
     sections_not_found: list[str] = []
     for spec in profile.sections:
+        # Containers carry no body, skip them.
+        if getattr(spec, "kind", "section") == "container":
+            continue
         text = story.get(spec.section_id, "")
         if not text:
             continue
-        if _fill_section_after_heading(doc, spec.display_name, text):
+        kind = getattr(spec, "kind", "section")
+        if _fill_section_after_heading(doc, spec.display_name, text, kind=kind):
             sections_filled.append(spec.section_id)
         else:
             sections_not_found.append(spec.display_name)
@@ -156,18 +160,47 @@ def _section_signature(text: str) -> tuple[str | None, str]:
 
 
 def _fill_section_after_heading(
-    doc: _Document, heading_text: str, body: str
+    doc: _Document,
+    heading_text: str,
+    body: str,
+    *,
+    kind: str = "section",
 ) -> bool:
     """Find the paragraph whose text matches ``heading_text`` and write
     ``body`` immediately after it.
 
-    Match precedence (strongest → weakest):
-      1. Identical section number (``"4-2"`` matches ``"4-2"``).
-      2. Identical bonus tag (both contain "加点" / "重点政策").
-      3. Normalised substring match either direction.
+    For leaves (the publisher's "（XXX字以内）" inputs), we MUST match on
+    the full normalised display text — section-number heuristics return
+    spurious matches because several leaves share the same numeric prefix
+    or none at all. For top-level sections, the numeric prefix is the
+    strongest available signal.
+
+    Match precedence:
+      Leaves: full normalised text equality, then substring either direction.
+      Sections / others: section-number, bonus tag, substring.
     """
     target_num, target_norm = _section_signature(heading_text)
     paras = list(doc.paragraphs)
+
+    if kind == "leaf":
+        # Pass A: exact normalised match (covers the bulk of leaves)
+        for i, para in enumerate(paras):
+            ptext_norm = _normalise(para.text)
+            if not ptext_norm:
+                continue
+            if ptext_norm == target_norm:
+                _insert_body_after(para, paras, i, body)
+                return True
+        # Pass B: substring either direction (rare phrasing drift between
+        # what the synthesiser stored and the raw docx paragraph text)
+        for i, para in enumerate(paras):
+            ptext_norm = _normalise(para.text)
+            if not ptext_norm:
+                continue
+            if target_norm in ptext_norm or ptext_norm in target_norm:
+                _insert_body_after(para, paras, i, body)
+                return True
+        return False
 
     # Pass 1: section-number match
     if target_num is not None:

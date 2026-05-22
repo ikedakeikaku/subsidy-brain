@@ -60,6 +60,25 @@ _NUMBERED_SECTION_RE = re.compile(
     r"(\S+.*)$"                              # at least one non-space char
 )
 
+# Mid-level sub-section markers: （１） （２） ... at the start of the line.
+# Used by gov 様式 to group leaves under a top-level numbered section.
+_MID_SECTION_RE = re.compile(r"^\s*[（(]\s*([0-9０-９]+)\s*[)）]\s*(\S+.*)$")
+
+# Leaf-level fillable section signal: a heading ending with a char-limit
+# marker like "（１０００字以内）" / "（500字程度）" / "（30字以下）".
+# When this marker is present, the paragraph IS a fillable input region
+# regardless of its style — that's the publishing body's own
+# convention across 様式 docs from METI, MoF, MHLW, etc.
+_CHAR_LIMIT_RE = re.compile(
+    r"[（(]\s*([0-9０-９]+)\s*字\s*(以内|程度|以下|まで)\s*[）)]"
+)
+
+# Circled-number / circled-text prefix for leaves where the publisher used
+# auto-numbered lists. python-docx's .text hides the auto-number, so we
+# also match explicit ①②③ and "③－２"-style explicit numbering.
+_CIRCLED_NUM_RE = re.compile(r"^\s*[①-⑳㉑-㉟]")
+_EXPLICIT_SUBNUM_RE = re.compile(r"^\s*[①-⑳][－\-‐]\s*[0-9０-９]+")
+
 
 def read_form_docx(docx_path: str | Path) -> dict[str, Any] | None:
     """Parse a 様式 docx and return a profile-shaped dict.
@@ -86,33 +105,77 @@ def read_form_docx(docx_path: str | Path) -> dict[str, Any] | None:
     tables_meta: list[dict[str, Any]] = []
 
     seen_ids: set[str] = set()
+    # Track the current top-level so leaves can disambiguate their IDs
+    # when their visible text is duplicated across siblings.
+    current_top: str | None = None
+    leaf_index_in_top: dict[str, int] = {}
+
     for para in doc.paragraphs:
         style = para.style.name if para.style else ""
         text = (para.text or "").strip()
         if not text:
             continue
 
-        is_heading = _is_heading_paragraph(para, style, text)
-        if not is_heading:
+        classification = _classify_heading(para, style, text)
+        if classification is None:
             continue
+        kind, char_limit = classification
 
         section_id = _derive_section_id(text)
-        # Disambiguate duplicates (e.g. two sections sharing the same
-        # leading number after slug collisions).
+        # For auto-numbered leaves (List Paragraph style, ①②③ hidden by
+        # python-docx), the visible text may not contain enough information
+        # to disambiguate (e.g. multiple "...（１０００字以内）" lines).
+        # Append an index keyed off the containing top-level section so
+        # ids stay stable but unique across the document.
+        if kind == "leaf" and current_top:
+            idx = leaf_index_in_top.get(current_top, 0) + 1
+            leaf_index_in_top[current_top] = idx
+            if section_id in seen_ids:
+                section_id = f"{current_top}_leaf_{idx:02d}"
         if section_id in seen_ids:
             section_id = f"{section_id}_{len(seen_ids)}"
         seen_ids.add(section_id)
 
-        target = _guess_target_chars(text)
-        sections.append(
-            {
-                "section_id": section_id,
-                "display_name": text,
-                "target_chars": target,
-                "min_chars": int(target * 0.65),
-                "max_chars": int(target * 1.3),
-            }
-        )
+        if kind == "leaf":
+            # Char limit drives target/min/max precisely (no heuristic
+            # guesswork — the publisher told us the limit).
+            limit = char_limit or _guess_target_chars(text)
+            target = int(limit * 0.9)
+            sections.append(
+                {
+                    "section_id": section_id,
+                    "display_name": text,
+                    "target_chars": target,
+                    "min_chars": int(limit * 0.5),
+                    "max_chars": limit,
+                    "kind": "leaf",
+                }
+            )
+        elif kind == "container":
+            sections.append(
+                {
+                    "section_id": section_id,
+                    "display_name": text,
+                    "target_chars": 0,
+                    "min_chars": 0,
+                    "max_chars": 0,
+                    "kind": "container",
+                }
+            )
+        else:  # "section" (top-level)
+            target = _guess_target_chars(text)
+            sections.append(
+                {
+                    "section_id": section_id,
+                    "display_name": text,
+                    "target_chars": target,
+                    "min_chars": int(target * 0.65),
+                    "max_chars": int(target * 1.3),
+                    "kind": "section",
+                }
+            )
+            current_top = section_id
+            leaf_index_in_top[section_id] = 0
 
     for table in doc.tables:
         cols = len(table.columns)
@@ -168,27 +231,75 @@ def _is_real_docx(path: Path) -> bool:
         return False
 
 
-def _is_heading_paragraph(para: Any, style: str, text: str) -> bool:
-    """A paragraph counts as a heading if:
-      (1) it uses a Word Heading / 見出し style, OR
-      (2) it starts with a section number ("１．", "2-1.", "第1部") and
-          is reasonably short (Japanese gov docs typically keep section
-          titles under 60 chars).
+def _classify_heading(
+    para: Any, style: str, text: str
+) -> tuple[str, int | None] | None:
+    """Return ``(kind, char_limit)`` if the paragraph is a heading, else None.
+
+    ``kind`` is one of:
+      * ``"leaf"`` — fillable input region with a char-count marker. Always
+        rendered with its own body, sized to the publisher's char limit.
+      * ``"container"`` — mid-level grouping like "（１）申請者の概要".
+        No body of its own; its leaves carry the content.
+      * ``"section"`` — top-level numbered section ("０．", "１．", "2-1.").
+        Has body when no leaves are nested under it (e.g. "０．誓約・同意事項").
     """
+    if not text or len(text) > 200:
+        # Heading text is bounded — anything longer is body prose.
+        return None
+
+    char_limit = _extract_char_limit(text)
+
+    # Strongest signal: a char-limit marker — this paragraph is a leaf
+    # regardless of style or numbering prefix. The publisher chose to put
+    # an "（NNN字以内）" annotation here precisely because it's a fillable
+    # input region. Style filter is intentionally loose so we catch the
+    # auto-numbered List Paragraph leaves whose visible ①②③ are hidden
+    # by python-docx's run-text view.
+    if char_limit is not None:
+        return ("leaf", char_limit)
+
+    # Explicit circled-number or "③－２" prefix → leaf without char limit.
+    if _CIRCLED_NUM_RE.match(text) or _EXPLICIT_SUBNUM_RE.match(text):
+        # Still need a sanity bound — body prose can start with ① too.
+        if len(text) <= 80 and "。" not in text[:60]:
+            return ("leaf", None)
+
+    # Mid-level container: "（１）", "（２）", ...
+    # Parenthetical notes inside the heading often contain "。" (e.g.
+    # "（３）役員一覧（監査役を含む。）"), so the punctuation gate is only
+    # applied outside parentheses.
+    if _MID_SECTION_RE.match(text):
+        outside_parens = re.sub(r"[（(][^（）()]*[）)]", "", text)
+        if "、" not in outside_parens and "。" not in outside_parens:
+            return ("container", None)
+
+    # Word Heading / 見出し style — treat as top-level section.
     if style.startswith("Heading") or style.startswith("見出し"):
-        return True
+        return ("section", None)
+
+    # Numbered top-level: "０．", "１．", "2-1.", "Ⅰ."
     if len(text) > 80:
-        return False
+        return None
     if not _NUMBERED_SECTION_RE.match(text):
-        return False
-    # Reject obvious non-heading lines that happen to start with a number
-    # (e.g. "1. なお、〜である" or "1. 100社の調査結果によれば...").
-    # Heuristic: heading titles don't contain commas or periods after the
-    # first 20 chars.
+        return None
     head = text[:60]
     if "、" in head or "。" in head:
-        return False
-    return True
+        return None
+    return ("section", None)
+
+
+def _extract_char_limit(text: str) -> int | None:
+    """Return the integer char limit from a heading like "...（１０００字以内）",
+    or ``None`` if no char-limit marker is present."""
+    m = _CHAR_LIMIT_RE.search(text)
+    if not m:
+        return None
+    raw = m.group(1).translate(_FULLWIDTH_DIGITS)
+    try:
+        return int(raw)
+    except ValueError:
+        return None
 
 
 _FULLWIDTH_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")

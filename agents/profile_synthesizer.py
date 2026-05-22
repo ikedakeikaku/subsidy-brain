@@ -701,6 +701,9 @@ class ProfileSynthesizer:
 
 
 def _sanitize_section(raw: dict) -> dict:
+    kind = str(raw.get("kind") or "section").strip().lower()
+    if kind not in {"leaf", "container", "section"}:
+        kind = "section"
     return {
         "section_id": str(raw.get("section_id") or "").strip(),
         "display_name": str(raw.get("display_name") or "").strip(),
@@ -708,6 +711,7 @@ def _sanitize_section(raw: dict) -> dict:
         "min_chars": int(raw.get("min_chars") or 450),
         "max_chars": int(raw.get("max_chars") or 800),
         "requires_data_paths": list(raw.get("requires_data_paths") or []),
+        "kind": kind,
     }
 
 

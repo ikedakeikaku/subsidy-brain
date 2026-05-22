@@ -88,8 +88,35 @@ async def build_story_for_profile(
     Returns a dict keyed by ``section.section_id`` — exactly what the
     downstream document_assembler and length_validator expect.
     """
-    story: dict[str, str] = {}
+    # Containers (mid-level groupings like "（１）申請者の概要") have no
+    # body of their own — their content lives in the leaves or tables
+    # underneath. When a top-level section ("１．申請者の概要等" /
+    # "４．事業内容") has ANY children (container or leaf) under it, we
+    # skip the top-level body too: the children carry the real content.
+    children_by_parent_top: dict[str, list[SectionSpec]] = {}
+    current_top: SectionSpec | None = None
     for spec in profile.sections:
+        if spec.kind == "section":
+            current_top = spec
+        elif spec.kind in {"leaf", "container"} and current_top is not None:
+            children_by_parent_top.setdefault(
+                current_top.section_id, []
+            ).append(spec)
+
+    story: dict[str, str] = {}
+    current_top = None
+    for spec in profile.sections:
+        if spec.kind == "container":
+            # No body for containers — skip without making an API call.
+            story[spec.section_id] = ""
+            continue
+        if spec.kind == "section":
+            current_top = spec
+            # Top-level with nested children → its content is the union of
+            # the children, not its own body. Skip the top-level body call.
+            if children_by_parent_top.get(spec.section_id):
+                story[spec.section_id] = ""
+                continue
         try:
             text = await generate_section(
                 spec,
@@ -99,10 +126,11 @@ async def build_story_for_profile(
             )
             story[spec.section_id] = text
             logger.info(
-                "story: %s → %d chars (target %d)",
+                "story: %s → %d chars (target %d) [%s]",
                 spec.section_id,
                 len(text),
                 spec.target_chars,
+                spec.kind,
             )
         except Exception as e:  # noqa: BLE001
             logger.warning(
