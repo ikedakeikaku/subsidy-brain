@@ -49,6 +49,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from agents.adoption_researcher import AdoptionResearcher  # noqa: E402
+from agents.bonus_evaluator import BonusEvaluator  # noqa: E402
 from agents.guideline_fetcher import GuidelineFetcher  # noqa: E402
 from agents.profile_synthesizer import ProfileSynthesizer  # noqa: E402
 from agents.subsidy_discoverer import discover_subsidy  # noqa: E402
@@ -166,6 +167,23 @@ async def run(query: str, *, live: bool, use_cache: bool) -> None:
     # text — backfill with the mock equivalent if missing.
     for spec in profile.sections:
         story.setdefault(spec.section_id, MOCK_STORY.get(spec.section_id, ""))
+
+    # ----- 5b. Per-subsidy bonus-item evaluation ------------------------
+    # profile.bonus_items differs by subsidy (持続化補助金 has 事業環境変化,
+    # ものづくり has 賃上げ・サイバーセキュリティ・知的財産, 省力化 has
+    # 賃上げ・大幅賃上げ・地域経済牽引, etc.). Generate the right body
+    # text per item, applying only the items this company qualifies for.
+    bonus_results = await BonusEvaluator().evaluate(
+        profile, company, mode="live" if live else "mock"
+    )
+    for r in bonus_results:
+        if r.applicable and r.body_text:
+            story[f"bonus_{r.item_id}"] = r.body_text
+    logger.info(
+        "bonus_items: %d total / %d applicable",
+        len(bonus_results),
+        sum(1 for r in bonus_results if r.applicable),
+    )
 
     length_report = validate_lengths(profile, story)
     initial = estimate_adoption_probability(profile, company, story)

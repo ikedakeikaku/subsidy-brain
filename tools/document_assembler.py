@@ -261,6 +261,22 @@ def assemble_document(
     hdr.rows[3].cells[0].text = "従業員数"
     hdr.rows[3].cells[1].text = f"{company_block.get('employees', '')}名"
 
+    # ＜加点項目＞ block — render before the main sections (matches the
+    # layout of typical 様式2 forms). bonus_items contents come from the
+    # BonusEvaluator and are addressed in story under "bonus_{item_id}".
+    bonus_rendered: list[str] = []
+    if profile.bonus_items:
+        doc.add_heading("＜加点項目＞", level=1)
+        for item in profile.bonus_items:
+            key = f"bonus_{item.item_id}"
+            body = (story or {}).get(key, "")
+            if not body:
+                continue  # not applicable for this company
+            label = f"【{item.category}】{item.display_name}" if item.category else item.display_name
+            doc.add_heading(label, level=2)
+            doc.add_paragraph(body)
+            bonus_rendered.append(item.item_id)
+
     inserted_charts: list[str] = []
     inserted_tables: list[str] = []
 
@@ -324,4 +340,5 @@ def assemble_document(
         "sections_rendered": [s.section_id for s in profile.sections],
         "charts_inserted": inserted_charts,
         "tables_inserted": inserted_tables,
+        "bonus_items_rendered": bonus_rendered,
     }

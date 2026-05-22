@@ -23,6 +23,8 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, Field
 
+from schemas.bonus_item import BonusItemSpec
+
 
 class ChartType(str, Enum):
     REVENUE_TREND = "revenue_trend"            # 月次/年次の売上推移
@@ -86,6 +88,13 @@ class SubsidyProfile(BaseModel):
     sections: list[SectionSpec]
     charts: list[ChartSpec] = Field(default_factory=list)
     tables: list[TableSpec] = Field(default_factory=list)
+    bonus_items: list[BonusItemSpec] = Field(
+        default_factory=list,
+        description=(
+            "この補助金固有の加点項目。空なら『加点項目なし』を意味する（補助金"
+            "ごとに加点項目は異なる）"
+        ),
+    )
     quality_score_target: int = Field(
         default=80, description="自己採点の到達目標（100点満点）"
     )
