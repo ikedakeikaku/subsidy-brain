@@ -48,6 +48,18 @@ _APPLICANT_LABELS = (
 
 _SECTION_NUMBER_RE = re.compile(r"([0-9]+(?:[-\.][0-9]+)*)")
 
+# Real Japanese government docx files often skip the Word Heading style and
+# write section titles as plain "Normal" paragraphs with a numbered prefix
+# like "０．", "１．", "2-1.", "Ⅰ.". This pattern detects them. Allows
+# full-width and half-width digits, optional period, optional sub-number.
+_NUMBERED_SECTION_RE = re.compile(
+    r"^\s*"
+    r"(?:第\s*)?"                           # optional "第" prefix
+    r"([0-9０-９IVXⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+(?:[-\.‐－][0-9０-９]+)*)"
+    r"[\.\．、:：　 ]+"                      # delimiter
+    r"(\S+.*)$"                              # at least one non-space char
+)
+
 
 def read_form_docx(docx_path: str | Path) -> dict[str, Any] | None:
     """Parse a 様式 docx and return a profile-shaped dict.
@@ -73,19 +85,24 @@ def read_form_docx(docx_path: str | Path) -> dict[str, Any] | None:
     applicant_fields: list[dict[str, str]] = []
     tables_meta: list[dict[str, Any]] = []
 
+    seen_ids: set[str] = set()
     for para in doc.paragraphs:
         style = para.style.name if para.style else ""
         text = (para.text or "").strip()
         if not text:
             continue
-        if not style.startswith("Heading"):
+
+        is_heading = _is_heading_paragraph(para, style, text)
+        if not is_heading:
             continue
 
-        # Build a stable section_id from the heading text:
-        #   "1-1. 自社の概要" → "section_1_1"
-        #   "＜経営計画＞ 1. 企業概要" → "keiei_1"
-        #   no number → slugified text
         section_id = _derive_section_id(text)
+        # Disambiguate duplicates (e.g. two sections sharing the same
+        # leading number after slug collisions).
+        if section_id in seen_ids:
+            section_id = f"{section_id}_{len(seen_ids)}"
+        seen_ids.add(section_id)
+
         target = _guess_target_chars(text)
         sections.append(
             {
@@ -151,9 +168,52 @@ def _is_real_docx(path: Path) -> bool:
         return False
 
 
+def _is_heading_paragraph(para: Any, style: str, text: str) -> bool:
+    """A paragraph counts as a heading if:
+      (1) it uses a Word Heading / 見出し style, OR
+      (2) it starts with a section number ("１．", "2-1.", "第1部") and
+          is reasonably short (Japanese gov docs typically keep section
+          titles under 60 chars).
+    """
+    if style.startswith("Heading") or style.startswith("見出し"):
+        return True
+    if len(text) > 80:
+        return False
+    if not _NUMBERED_SECTION_RE.match(text):
+        return False
+    # Reject obvious non-heading lines that happen to start with a number
+    # (e.g. "1. なお、〜である" or "1. 100社の調査結果によれば...").
+    # Heuristic: heading titles don't contain commas or periods after the
+    # first 20 chars.
+    head = text[:60]
+    if "、" in head or "。" in head:
+        return False
+    return True
+
+
+_FULLWIDTH_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
+_ROMAN_TO_INT = {
+    "Ⅰ": "1", "Ⅱ": "2", "Ⅲ": "3", "Ⅳ": "4", "Ⅴ": "5",
+    "Ⅵ": "6", "Ⅶ": "7", "Ⅷ": "8", "Ⅸ": "9", "Ⅹ": "10",
+}
+
+
+def _normalise_number(token: str) -> str:
+    """Convert full-width or Roman section numbers to ASCII digits."""
+    token = token.translate(_FULLWIDTH_DIGITS)
+    for roman, ascii_n in _ROMAN_TO_INT.items():
+        token = token.replace(roman, ascii_n)
+    return token
+
+
 def _derive_section_id(heading_text: str) -> str:
     """Stable ASCII id for a heading. Falls back to a slugified hash of
     the text if no section number is present."""
+    # Look at the start of the heading first (gov-style numbered sections)
+    nm = _NUMBERED_SECTION_RE.match(heading_text)
+    if nm:
+        num = _normalise_number(nm.group(1)).replace(".", "_").replace("-", "_")
+        return f"section_{num}"
     match = _SECTION_NUMBER_RE.search(heading_text)
     if match:
         num = match.group(1).replace(".", "_").replace("-", "_")

@@ -181,7 +181,10 @@ def _add_table_to_doc(doc: Document, table_spec: TableSpec, data: Any) -> None:
     p.add_run(f"【{table_spec.title}】").bold = True
 
     word_table = doc.add_table(rows=1 + len(rows), cols=len(table_spec.columns))
-    word_table.style = "Light Grid Accent 1"
+    try:
+        word_table.style = "Light Grid Accent 1"
+    except KeyError:
+        pass  # template doesn't define this built-in; fall back to default
     for i, col in enumerate(table_spec.columns):
         cell = word_table.rows[0].cells[i]
         cell.text = col
@@ -249,7 +252,10 @@ def assemble_document(
     company_block = company.get("company", {})
     doc.add_heading("申請者情報", level=1)
     hdr = doc.add_table(rows=4, cols=2)
-    hdr.style = "Light Grid Accent 1"
+    try:
+        hdr.style = "Light Grid Accent 1"
+    except KeyError:
+        pass
     hdr.rows[0].cells[0].text = "事業者名"
     hdr.rows[0].cells[1].text = str(company_block.get("name", ""))
     hdr.rows[1].cells[0].text = "代表者氏名"

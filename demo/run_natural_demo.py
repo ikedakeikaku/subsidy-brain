@@ -134,19 +134,21 @@ async def run(query: str, *, live: bool, use_cache: bool) -> None:
                 guideline_path = None
 
         # 様式 docx that survived: either fetched (HTML-recovery may have
-        # produced a real docx) or user-committed under templates/<id>/
+        # produced a real docx) or user-committed under templates/<id>/.
+        # Directory matching is fuzzy so the user doesn't need to know the
+        # exact program_id the discoverer will return.
         form_docx_paths: list[str] = []
         for path in (fetch_manifest.get("form_paths") or {}).values():
             pp = Path(path)
             if pp.exists() and pp.stat().st_size >= 1024 and pp.suffix == ".docx":
                 form_docx_paths.append(str(pp))
-        local_templates_dir = Path("templates") / program.program_id
-        if local_templates_dir.exists():
-            for pp in local_templates_dir.glob("様式*.docx"):
-                form_docx_paths.append(str(pp))
-            for pp in local_templates_dir.glob("*.docx"):
-                if not pp.name.startswith("_") and str(pp) not in form_docx_paths:
-                    form_docx_paths.append(str(pp))
+        for tdir in _find_template_dirs(program.program_id, program.canonical_name):
+            for pp in sorted(tdir.glob("様式*.docx")) + sorted(tdir.glob("*.docx")):
+                if pp.name.startswith("_"):
+                    continue
+                p = str(pp)
+                if p not in form_docx_paths:
+                    form_docx_paths.append(p)
 
         # Auxiliary docs that survived the fetcher's HTML-recovery step
         # (only PDFs are useful for the synthesizer right now)
@@ -371,6 +373,54 @@ async def run(query: str, *, live: bool, use_cache: bool) -> None:
 def _slug(name: str) -> str:
     import re
     return re.sub(r"\W+", "_", name.lower()).strip("_") or "subsidy"
+
+
+def _find_template_dirs(program_id: str, canonical_name: str) -> list[Path]:
+    """Return every templates/ subdirectory that could plausibly belong to
+    this subsidy. Used for user-committed 様式 docx so the user doesn't
+    need to predict the exact program_id the discoverer will return.
+
+    Discoverers are non-deterministic about separator and romanisation
+    style ("monodukuri-23" / "monodukuri_23" / "monozukuri_v23" /
+    "mono_dukuri_23" can all surface for the same subsidy). The matcher
+    therefore normalises both sides before comparing.
+
+    Match strategy:
+      1. Exact program_id match (after normalisation)
+      2. Subdirectory name shares a normalised token (e.g.
+         "monodukuri" / "monozukuri" — len ≥ 3) with the program_id
+         or canonical_name slug
+    """
+    root = Path("templates")
+    if not root.exists():
+        return []
+
+    def _tokens(s: str) -> set[str]:
+        # Normalise: lowercase, replace any non-alphanumeric with "_",
+        # then split on _. Single-letter tokens are dropped (noise).
+        return {
+            t for t in _slug(s).split("_")
+            if len(t) >= 3
+        }
+
+    hits: list[Path] = []
+    # Exact (slug-normalised) match
+    pid_norm = _slug(program_id)
+    for d in sorted(root.iterdir()):
+        if d.is_dir() and _slug(d.name) == pid_norm:
+            hits.append(d)
+            break
+
+    keywords = _tokens(program_id) | _tokens(canonical_name)
+
+    for d in sorted(root.iterdir()):
+        if not d.is_dir() or d in hits:
+            continue
+        if d.name.startswith("."):
+            continue
+        if _tokens(d.name) & keywords:
+            hits.append(d)
+    return hits
 
 
 def main() -> None:

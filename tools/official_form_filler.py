@@ -327,7 +327,13 @@ def _add_table(doc: _Document, spec: TableSpec, data: Any) -> None:
         return
 
     table = doc.add_table(rows=1 + len(rows), cols=len(spec.columns))
-    table.style = "Light Grid Accent 1"
+    # Real publisher 様式 docs may not define the "Light Grid Accent 1"
+    # built-in style; fall back silently to the document's default style
+    # rather than crashing.
+    try:
+        table.style = "Light Grid Accent 1"
+    except KeyError:
+        pass
     for j, col in enumerate(spec.columns):
         c = table.rows[0].cells[j]
         c.text = col
