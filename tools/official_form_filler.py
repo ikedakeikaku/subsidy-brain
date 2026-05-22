@@ -189,7 +189,7 @@ def _fill_section_after_heading(
             if not ptext_norm:
                 continue
             if ptext_norm == target_norm:
-                _insert_body_after(para, paras, i, body)
+                _insert_leaf_body(para, paras, i, body)
                 return True
         # Pass B: substring either direction (rare phrasing drift between
         # what the synthesiser stored and the raw docx paragraph text)
@@ -198,7 +198,7 @@ def _fill_section_after_heading(
             if not ptext_norm:
                 continue
             if target_norm in ptext_norm or ptext_norm in target_norm:
-                _insert_body_after(para, paras, i, body)
+                _insert_leaf_body(para, paras, i, body)
                 return True
         return False
 
@@ -227,6 +227,9 @@ def _fill_section_after_heading(
     return False
 
 
+_W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+
+
 def _insert_body_after(heading_para, paras, idx: int, body: str) -> None:
     """If the paragraph right after ``heading_para`` is empty, fill it.
     Otherwise insert a new paragraph using lxml-level placement so the
@@ -244,6 +247,102 @@ def _insert_body_after(heading_para, paras, idx: int, body: str) -> None:
     new_p = heading_para._parent.add_paragraph(body)
     heading_element = heading_para._p
     heading_element.addnext(new_p._p)
+
+
+def _insert_leaf_body(heading_para, paras, idx: int, body: str) -> None:
+    """Insert body for a leaf heading.
+
+    Japanese 様式 docs put each leaf's input region inside a table
+    immediately after the heading:
+
+      * **rows=1, single cell**: the cell contains the instruction text
+        ("市場・顧客動向を始めとした..."). The body is appended INSIDE
+        the cell, after the instruction.
+      * **rows=2**: row 0 is the instruction; row 1 is empty. The body
+        is written into row 1's first cell.
+      * **no following table**: fall back to the legacy paragraph-after
+        insertion (covers headings whose 様式 happens to use an empty
+        paragraph as the input region instead of a table).
+
+    This is what the publisher actually expects: their format is the
+    layout the reviewer sees, and putting body content outside the
+    designated table cell breaks the visual binding between the field
+    label (with its 字数制限 annotation) and the answer.
+    """
+    next_tbl = _next_sibling_tbl(heading_para._p)
+    if next_tbl is not None:
+        rows = next_tbl.findall(f"{_W_NS}tr")
+        if len(rows) >= 2:
+            # Last row is the input slot; first cell holds the answer.
+            target_cells = rows[-1].findall(f"{_W_NS}tc")
+            if target_cells:
+                _write_body_into_cell(target_cells[0], body)
+                return
+        if len(rows) == 1:
+            target_cells = rows[0].findall(f"{_W_NS}tc")
+            if target_cells:
+                # Single-cell input region: the publisher's instruction
+                # text is placeholder content (like form-control gray
+                # placeholder text in HTML). Replace it with the body.
+                _write_body_into_cell(target_cells[0], body)
+                return
+    # No table after the heading — fall through to the paragraph path.
+    _insert_body_after(heading_para, paras, idx, body)
+
+
+def _next_sibling_tbl(p_element):
+    """Walk forward from a paragraph element to find the next table.
+    Skips empty paragraphs (whitespace, page breaks). Returns ``None`` if
+    a non-empty paragraph is reached first."""
+    sibling = p_element.getnext()
+    while sibling is not None:
+        tag = sibling.tag.split("}")[-1]
+        if tag == "tbl":
+            return sibling
+        if tag == "p":
+            # Skip blank paragraphs; stop if a real heading-or-text shows up.
+            text = "".join(
+                (t.text or "")
+                for t in sibling.iter(f"{_W_NS}t")
+            ).strip()
+            if text:
+                return None
+        sibling = sibling.getnext()
+    return None
+
+
+def _write_body_into_cell(tc_element, body: str) -> None:
+    """Replace the cell's content with ``body`` (preserving cell style).
+
+    Used for the row-1 input cell of a 2-row instruction/input table —
+    that cell was empty, so we don't have to keep any prior text.
+    """
+    from docx.oxml.ns import qn
+
+    # Remove existing paragraph contents (but keep cell properties tcPr).
+    for child in list(tc_element):
+        if child.tag == qn("w:p"):
+            tc_element.remove(child)
+    # Add one paragraph carrying the body.
+    new_p = _make_body_paragraph(body)
+    tc_element.append(new_p)
+
+
+def _make_body_paragraph(body: str):
+    """Build a fresh ``<w:p>`` element containing ``body``. Plain Normal
+    style; no special run formatting — keeps the cell's own paragraph
+    style by default."""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    p = OxmlElement("w:p")
+    r = OxmlElement("w:r")
+    t = OxmlElement("w:t")
+    t.set(qn("xml:space"), "preserve")
+    t.text = body
+    r.append(t)
+    p.append(r)
+    return p
 
 
 # ---------------------------------------------------------------------------
