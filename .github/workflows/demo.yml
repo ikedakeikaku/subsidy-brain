@@ -31,14 +31,14 @@ jobs:
         run: uv run pytest -ra
 
       - name: Run demo (offline mock)
-        run: uv run python demo/run_demo.py
+        run: uv run python demo/run_natural_demo.py "持続化補助金 第19回"
 
       - name: Run demo (live, only if secret is set)
         if: ${{ env.HAS_KEY == 'true' }}
         env:
           HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: uv run python demo/run_demo.py --live
+        run: uv run python demo/run_natural_demo.py --live "持続化補助金 第19回"
 
       - name: Upload generated sample
         uses: actions/upload-artifact@v4
