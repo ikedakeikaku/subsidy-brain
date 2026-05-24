@@ -29,7 +29,7 @@ fallback in fully-offline CI runs.
 Usage::
 
     uv run python demo/run_natural_demo.py "持続化補助金 第19回"
-    uv run python demo/run_natural_demo.py --live "ものづくり補助金 第18次"
+    uv run python demo/run_natural_demo.py --live "持続化補助金 第19回"
     uv run python demo/run_natural_demo.py --no-cache "省力化投資補助金"
 """
 from __future__ import annotations
